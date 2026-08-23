@@ -1,0 +1,71 @@
+/* ============================================================
+   DocAI 设计令牌 —— 颜色/字体/圆角/动效的唯一来源（已确认设计系统 §1）
+   组件一律引用这些变量，禁止出现裸色值。
+   ============================================================ */
+
+:root {
+  /* ---- 背景层级（minimal 色板：米白 surface 弧底） ---- */
+  --bg: #f4f4f1; /* 页面底色（minimal surface） */
+  --surface: #ffffff; /* 卡片/面板（raised 白） */
+  --surface-2: #ecece7; /* 表头/次级块（近底色） */
+  --border: #d8d8d2; /* 边框/分隔线 */
+
+  /* ---- 文字（minimal text #0C0C09） ---- */
+  --text-primary: #0c0c09;
+  --text-secondary: #56564f;
+  --text-muted: #6e6e78;
+
+  /* ---- 品牌与状态（minimal secondary 藏青 / success / danger） ---- */
+  --brand: #312c85; /* 品牌主色（minimal secondary）：logo/主按钮/焦点环 */
+  --brand-hover: #45409a; /* hover 亮化一档 */
+  --on-brand: #ffffff; /* 品牌色表面上的文字/图形色 */
+  --success: #16a34a;
+  --danger: #dc2626;
+
+  /* ---- 字体（本地 fontsource 打包，禁止 CDN） ---- */
+  --font-display:
+    "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-body:
+    "Open Sans", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono:
+    "Inconsolata", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  /* ---- 圆角 ---- */
+  --radius-card: 12px; /* 卡片 */
+  --radius-control: 8px; /* 控件 */
+
+  /* ---- 动效 ---- */
+  --duration-fast: 150ms; /* 常规微交互 */
+  --duration-act: 400ms; /* 切幕 */
+}
+
+/* 键盘焦点环：品牌金 */
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+/* 步骤完成的 ✓ 弹出（200ms scale，一次性动画） */
+@keyframes docai-check-pop {
+  0% {
+    transform: scale(0.6);
+  }
+  60% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* prefers-reduced-motion：全部动效静态化（步骤 loader 同样停止旋转） */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

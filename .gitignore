@@ -1,0 +1,23 @@
+# ===== Python =====
+.venv/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+
+# ===== 运行产物（用户上传 / 生成的 Excel）=====
+uploads/
+outputs/
+
+# ===== 配置与密钥 =====
+.env
+
+# ===== IDE / 编辑器 =====
+.idea/
+.vscode/
+*.swp
+
+# ===== 工具缓存 =====
+pr.json
+*.log
+.pi-lens/

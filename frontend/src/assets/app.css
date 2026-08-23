@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    @apply bg-canvas text-primary;
+  }
+}
+
+@layer components {
+  /* 切幕动画：淡入 + 上移 400ms（prefers-reduced-motion 下由 tokens.css 全局关闭） */
+  .act-enter-active,
+  .act-leave-active {
+    transition:
+      opacity var(--duration-act) ease,
+      transform var(--duration-act) ease;
+  }
+  .act-enter-from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  .act-leave-to {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+
+  /* 错误条进出：150ms 淡入（上传卡 Transition name="fade-fast"） */
+  .fade-fast-enter-active,
+  .fade-fast-leave-active {
+    transition: opacity var(--duration-fast) ease;
+  }
+  .fade-fast-enter-from,
+  .fade-fast-leave-to {
+    opacity: 0;
+  }
+
+  /* 步骤完成的 ✓ 弹出（200ms scale） */
+  .step-check-pop {
+    animation: docai-check-pop 200ms ease-out;
+  }
+}

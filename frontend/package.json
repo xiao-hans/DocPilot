@@ -1,0 +1,28 @@
+{
+  "name": "docai-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DocAI 演示前端：Vue3 + Vite + Tailwind（离线 Demo，字体走本地 fontsource）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@fontsource/inconsolata": "^5.3.0",
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/open-sans": "^5.3.0",
+    "vue": "^3.5.41"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "autoprefixer": "^10.5.4",
+    "postcss": "^8.5.26",
+    "tailwindcss": "^3.4.19",
+    "typescript": "~5.9.3",
+    "vite": "^6.4.3",
+    "vue-tsc": "^2.2.12"
+  }
+}

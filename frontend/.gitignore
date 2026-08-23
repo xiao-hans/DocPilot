@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# 测试运行产物（Playwright 截图/临时资产/结果）
+test-results/
+playwright-report/
+tests/.tmp/
+tests/shots/
+tests/invoice_e2e.pdf
