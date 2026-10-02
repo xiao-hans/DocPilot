@@ -19,6 +19,7 @@ from app.models.job import JobStatus
 from app.models.document import Document, DocumentVersion
 from app.models.schema import validate_fields
 from app.services import ExcelBuilder
+from app.services.document_storage import resolve_storage_path
 from app.services.job_manager import get_job_manager
 
 router = APIRouter(prefix="/api/v1/tenants/{tenant_id}/jobs", tags=["jobs"])
@@ -87,6 +88,9 @@ async def create_job(
             destination = upload_dir / f"{uuid.uuid4().hex}{Path(filename).suffix.lower()}"
             destination.write_bytes(content)
             finfo.path = str(destination.resolve())
+            storage_key = destination.resolve().relative_to(UPLOAD_DIR.resolve()).as_posix()
+            if resolve_storage_path(storage_key, UPLOAD_DIR) != destination.resolve():
+                raise ValueError("存储键与落盘位置不一致")
             now = datetime.now(timezone.utc)
             document = Document(
                 id=uuid.uuid4().hex,
@@ -104,9 +108,7 @@ async def create_job(
                     job_id=job.id,
                     revision=1,
                     original_filename=filename,
-                    storage_key=destination.resolve()
-                    .relative_to(UPLOAD_DIR.resolve())
-                    .as_posix(),
+                    storage_key=storage_key,
                     checksum=hashlib.sha256(content).hexdigest(),
                     media_type=_MEDIA_TYPES[Path(filename).suffix.lower()],
                     size_bytes=len(content),

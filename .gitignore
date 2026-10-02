@@ -9,6 +9,7 @@ __pycache__/
 uploads/
 outputs/
 data/
+.codegraph/
 
 # ===== 配置与密钥 =====
 .env
