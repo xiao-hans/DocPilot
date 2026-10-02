@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
@@ -31,11 +31,15 @@ class JobRepository:
         tenant_id: str,
         owner_id: str | None,
         audit_events: Sequence[AuditEvent] = (),
+        after: Callable[[Any], None] | None = None,
     ) -> None:
+        """快照、审计与 after 回调内的写入共享同一事务。"""
         snapshot = self._snapshot(job)
         with self._sessions() as db:
             self._save_job_record(db, job, tenant_id, owner_id, snapshot)
             db.add_all(audit_events)
+            if after is not None:
+                after(db)
             db.commit()
 
     @staticmethod

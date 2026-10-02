@@ -21,10 +21,12 @@ class DocumentPipeline:
         dispatcher: ParserDispatcher | None = None,
         extractor: ExtractorBase | None = None,
         on_update: Callable[[Job], None] | None = None,
+        on_result: Callable[[Job, FileInfo, object, object], None] | None = None,
     ) -> None:
         self.dispatcher = dispatcher or get_dispatcher()
         self.extractor = extractor or get_extractor(EXTRACTOR_MODE)
         self.on_update = on_update
+        self.on_result = on_result
 
     def _notify(self, job: Job) -> None:
         if self.on_update is not None:
@@ -64,6 +66,8 @@ class DocumentPipeline:
                     "warnings": extract.warnings,
                 }
                 job.result.append(row)
+                if self.on_result is not None:
+                    self.on_result(job, finfo, parse_result, extract)
                 self._notify(job)
 
             except ParseError as exc:

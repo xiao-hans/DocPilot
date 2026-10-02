@@ -28,9 +28,12 @@ class JobManager:
         self._repository = repository
         if repository is not None:
             self._pipeline.on_update = self.save
+            self._pipeline.on_result = self._record_result
         self._lock = threading.Lock()
         # 正在处理中的 job_id 集合：锁外执行 pipeline 时的并发重入门闩
         self._processing: set[str] = set()
+        # 待与快照同事务落库的规范化结果
+        self._staged: dict[str, list[tuple[FileInfo, Any, Any]]] = {}
 
     def create_job(
         self,
@@ -72,10 +75,61 @@ class JobManager:
         """清除上传事务失败后尚未调度的任务缓存。"""
         with self._lock:
             self._jobs.pop(job_id, None)
+            self._staged.pop(job_id, None)
+
+    def _record_result(self, job: Job, finfo: FileInfo, parse_result, extract_result) -> None:
+        """暂存每个文件的规范化结果，由下一次快照写入在同一事务落库（DOC-DD-005 §6.1）。
+
+        快照与规范化结果分两次提交时，崩溃会留下"新快照 + 旧结果"的混合读视图；
+        暂存后两者共享同一事务，要么都可见要么都不可见。
+        """
+        if job.tenant_id is None or self._repository is None:
+            return
+        with self._lock:
+            self._staged.setdefault(job.id, []).append((finfo, parse_result, extract_result))
+
+    def _has_staged(self, job_id: str) -> bool:
+        with self._lock:
+            return bool(self._staged.get(job_id))
+
+    def _flush_staged(self, db, job: Job) -> None:
+        from app.contexts.review import service as review
+
+        with self._lock:
+            pending = self._staged.pop(job.id, [])
+        if not pending:
+            return
+        try:
+            for finfo, parse_result, extract_result in pending:
+                review.record_machine_result(
+                    db,
+                    tenant_id=job.tenant_id or "",
+                    job_id=job.id,
+                    filename=finfo.name,
+                    text=parse_result.text,
+                    fields=[field.model_dump() for field in job.fields],
+                    values=extract_result.values,
+                    warnings=extract_result.warnings,
+                )
+        except BaseException:
+            with self._lock:
+                self._staged[job.id] = pending + self._staged.get(job.id, [])
+            raise
 
     def save(self, job: Job, audit_events: Sequence[AuditEvent] = ()) -> None:
-        if job.tenant_id is not None and self._repository is not None:
-            self._repository.save(job, job.tenant_id, job.owner_id, audit_events)
+        if job.tenant_id is None or self._repository is None:
+            return
+        self._repository.save(
+            job,
+            job.tenant_id,
+            job.owner_id,
+            audit_events,
+            after=(
+                None
+                if not self._has_staged(job.id)
+                else lambda db: self._flush_staged(db, job)
+            ),
+        )
 
     def pending_job_ids(self) -> list[str]:
         """启动恢复：只重新调度 queued 任务。
@@ -169,7 +223,11 @@ class JobManager:
         finally:
             with self._lock:
                 self._processing.discard(job_id)
-            self.save(job)
+            try:
+                self.save(job)
+            finally:
+                with self._lock:
+                    self._staged.pop(job_id, None)
 
     def list_jobs(self) -> list[Job]:
         """按创建时间倒序。保留最近 100 个。"""

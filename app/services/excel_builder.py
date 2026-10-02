@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -14,6 +15,43 @@ _INJECTION_PREFIXES = ("=", "+", "-", "@")  # Excel 公式注入前缀
 _MIN_COL_WIDTH = 10
 _MAX_COL_WIDTH = 60
 _HEADER_BG = "1F4E79"  # 藏青
+_MAX_CELL_CHARS = 32767  # Excel 单元格上限，超出后 CSV 与 XLSX 会在同一处截断
+# openpyxl 拒绝写入 XML 非法控制字符，CSV 却会原样写出：不先归一就会出现
+# "XLSX 报错、CSV 带毒" 的分叉，两种格式必须走同一条归一路径。
+_ILLEGAL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _sanitize_text(value: object) -> str:
+    """文本归一：换行统一 → 控制字符 → 公式前缀 → 单元格长度上限。
+
+    XLSX 的 XML 解析会把 CRLF 折成 LF，这是格式本身的限制；CSV 若原样保留 CRLF，
+    同一单元格在两种格式里就会有不同的换行，所以两侧统一到 LF。
+    """
+    text = _as_text(value).replace("\r\n", "\n").replace("\r", "\n")
+    text = _ILLEGAL_CHARS.sub(" ", text)
+    text = _escape_formula(text)
+    if len(text) > _MAX_CELL_CHARS:
+        return text[: _MAX_CELL_CHARS - 3] + "..."
+    return text
+
+
+def cell_value(value: object) -> object:
+    """XLSX 单元格值：数字保持数字（可继续参与表格计算），其余按文本归一。
+
+    布尔值按文本写，否则 XLSX 显示 TRUE 而 CSV 显示 True，同一份数据两种读法。
+    """
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value
+    return _sanitize_text(value)
+
+
+def cell_text(value: object) -> str:
+    """CSV 单元格文本：与 XLSX 同一归一路径，保证可见内容逐字符一致。
+
+    两种格式各写一套规则时，XLSX 会拒绝 XML 非法控制字符而 CSV 照写，
+    同一任务于是出现"一份能下载、一份报错"的分叉。
+    """
+    return _as_text(cell_value(value))
 
 
 class ExcelBuilder:
@@ -27,7 +65,7 @@ class ExcelBuilder:
     def build(self, job: Job, output_path: Path) -> Path:
         # 表头（字段名）与文件名均为用户可控输入，统一过公式注入转义（P1 安全修复）
         headers = ["filename", *(f.name for f in job.fields)]
-        headers = [_escape_formula(h) for h in headers]
+        headers = [cell_text(h) for h in headers]
 
         wb = Workbook()
         ws = wb.active
@@ -37,12 +75,9 @@ class ExcelBuilder:
         rows: list[list[object]] = []
         col_max_len = [len(h) for h in headers]
         for row in job.result or []:
-            values: list[object] = [_escape_formula(_as_text(row["file"]))]
+            values: list[object] = [cell_value(row["file"])]
             for f in job.fields:
-                value = row["values"].get(f.name, "")
-                if isinstance(value, str):
-                    value = _escape_formula(value)
-                values.append(value)
+                values.append(cell_value(row["values"].get(f.name, "")))
             rows.append(values)
             for i, value in enumerate(values):
                 col_max_len[i] = max(col_max_len[i], len(str(value)))

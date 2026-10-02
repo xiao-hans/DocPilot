@@ -265,3 +265,43 @@ def attempts_payload(db: Session, job_id: str, tenant_id: str) -> list[dict[str,
         }
         for attempt in rows
     ]
+
+
+def list_jobs(
+    db: Session,
+    *,
+    tenant_id: str,
+    status: str | None = None,
+    template_version_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """租户内任务列表：分页 + 状态/模板过滤，响应不含存储路径。"""
+    from sqlalchemy import func
+
+    stmt = select(PersistentJob).where(PersistentJob.tenant_id == tenant_id)
+    if status and status != "all":
+        stmt = stmt.where(PersistentJob.status == status)
+    if template_version_id:
+        stmt = stmt.where(PersistentJob.template_version_id == template_version_id)
+    total = int(db.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
+    rows = db.scalars(
+        stmt.order_by(PersistentJob.created_at.desc(), PersistentJob.id.desc())
+        .limit(max(1, min(limit, 100)))
+        .offset(max(0, offset))
+    ).all()
+    return {
+        "total": total,
+        "jobs": [
+            {
+                "id": row.id,
+                "status": row.status,
+                "template_version_id": row.template_version_id,
+                "attempt_count": row.attempt_count,
+                "file_count": len((row.snapshot or {}).get("files") or []),
+                "created_at": row.created_at.timestamp(),
+                "finished_at": row.finished_at.timestamp() if row.finished_at else None,
+            }
+            for row in rows
+        ],
+    }

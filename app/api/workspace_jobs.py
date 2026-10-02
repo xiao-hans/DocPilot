@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
+import shutil  # noqa: E401  (失败清理使用)
 import uuid
 from datetime import datetime, timezone
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ from fastapi import (
     Form,
     Header,
     HTTPException,
+    Query,
     UploadFile,
 )
 from fastapi.responses import FileResponse, JSONResponse
@@ -32,7 +34,9 @@ from app.db import get_db
 from app.models.document import Document, DocumentVersion
 from app.models.job import Job, JobStatus
 from app.models.schema import FieldDefinition, validate_fields
-from app.services import ExcelBuilder, audit
+from app.contexts.review import service as review
+from app.services import ExcelBuilder, audit, csv_builder
+from app.services.export_files import build_atomically
 from app.services.document_storage import resolve_storage_path
 from app.services.job_manager import get_job_manager
 
@@ -290,7 +294,10 @@ def get_job_excel(
         object_id=job.id,
     )
     if path is None:
-        path = ExcelBuilder().build(job, output_dir / f"{job.id}.xlsx")
+        path = build_atomically(
+            lambda staging: ExcelBuilder().build(job, staging),
+            output_dir / f"{job.id}.xlsx",
+        )
         job.excel_path = str(path)
     # 导出路径与下载审计在同一事务写入，避免审计失败时业务已提交的不一致。
     get_job_manager().save(job, audit_events=[audit_event])
@@ -299,6 +306,67 @@ def get_job_excel(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=f"{job.id}.xlsx",
     )
+
+
+@router.get("")
+def list_jobs(
+    status: str | None = None,
+    template_version_id: str | None = None,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    context: TenantContext = Depends(require_roles(*READ_ROLES)),
+    db: Session = Depends(get_db),
+):
+    return processing.list_jobs(
+        db,
+        tenant_id=context.tenant.id,
+        status=status,
+        template_version_id=template_version_id,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/{job_id}/export")
+def export_job(
+    job_id: str,
+    format: str = Query(default="xlsx", pattern="^(xlsx|csv)$"),
+    context: TenantContext = Depends(require_roles(*READ_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """按当前结果值导出（存在人工修订时不再回退机器快照），并保持注入防护。"""
+    job = _load_job(job_id, context)
+    if job.status not in (JobStatus.SUCCEEDED, JobStatus.PARTIAL):
+        raise HTTPException(status_code=404, detail="任务未完成或失败，无法导出")
+
+    rows = review.export_rows(db, tenant_id=context.tenant.id, job_id=job.id)
+    export_job_view = replace(job, result=rows) if rows else job
+
+    output_dir = OUTPUT_DIR / context.tenant.id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    # 导出文件与 /excel 的快照缓存分开命名：两者数据源不同，覆盖会让旧链接换内容。
+    if format == "csv":
+        path = build_atomically(
+            lambda staging: csv_builder.build(export_job_view, staging),
+            output_dir / f"{job.id}.csv",
+        )
+        media = "text/csv"
+    else:
+        path = build_atomically(
+            lambda staging: ExcelBuilder().build(export_job_view, staging),
+            output_dir / f"{job.id}.export.xlsx",
+        )
+        media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    audit.record_now(
+        tenant_id=context.tenant.id,
+        actor_user_id=context.auth.user.id,
+        action="job.exported",
+        object_type="job",
+        object_id=job.id,
+        metadata={"format": format},
+    )
+    return FileResponse(path, media_type=media, filename=f"{job.id}.{format}")
 
 
 def _load_job(job_id: str, context: TenantContext) -> Job:

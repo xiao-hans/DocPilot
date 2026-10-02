@@ -30,6 +30,12 @@ METADATA_KEYS: dict[str, frozenset[str]] = {
     "template.published": frozenset({"revision"}),
     "template.retired": frozenset({"name"}),
     "template.copied": frozenset({"name"}),
+    "document.metadata_updated": frozenset({"changed"}),
+    "document.exported": frozenset({"format"}),
+    "job.exported": frozenset({"format"}),
+    "result.revised": frozenset({"revision_no"}),
+    "result.confirmed": frozenset({"revision_no"}),
+    "result.rejected": frozenset({"revision_no"}),
 }
 
 

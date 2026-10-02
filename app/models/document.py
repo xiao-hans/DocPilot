@@ -8,7 +8,9 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     Integer,
+    JSON,
     String,
     UniqueConstraint,
 )
@@ -33,7 +35,14 @@ class Document(Base):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    # FR-013 文档元数据：类型来自模板名，来源区分上传/API/导入，保留状态服务于删除流程。
+    doc_type: Mapped[str | None] = mapped_column(String(120))
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="upload")
+    retention_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="active", index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     versions: Mapped[list[DocumentVersion]] = relationship(
         back_populates="document", cascade="all, delete-orphan"
@@ -70,3 +79,23 @@ class DocumentVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     document: Mapped[Document] = relationship(back_populates="versions")
+
+
+class DocumentLabel(Base):
+    """标签规范化存储：可索引、可分页过滤，且在 SQLite/PostgreSQL 行为一致。"""
+
+    __tablename__ = "document_labels"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "document_id", "label", name="uq_document_label"),
+        Index("ix_document_labels_tenant_label", "tenant_id", "label"),
+        Index("ix_document_labels_document_id", "document_id"),
+    )
+
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    label: Mapped[str] = mapped_column(String(30), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
