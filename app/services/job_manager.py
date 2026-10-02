@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 
 from app.models.job import FileInfo, Job, JobStatus, Progress
+from app.models.document import Document, DocumentVersion
 from app.models.schema import FieldDefinition
 from app.services.pipeline import DocumentPipeline
 from app.services.job_repository import JobRepository
@@ -34,6 +35,7 @@ class JobManager:
         *,
         tenant_id: str | None = None,
         owner_id: str | None = None,
+        persist: bool = True,
     ) -> Job:
         """files: [(原始文件名, 磁盘路径), ...]；fields: 已校验的 FieldDefinition 列表。"""
         job = Job(
@@ -46,9 +48,24 @@ class JobManager:
         )
         with self._lock:
             self._jobs[job.id] = job
-        if tenant_id is not None and self._repository is not None:
+        if persist and tenant_id is not None and self._repository is not None:
             self._repository.save(job, tenant_id, owner_id)
         return job
+
+    def save_with_documents(
+        self,
+        job: Job,
+        documents: list[Document],
+        versions: list[DocumentVersion],
+    ) -> None:
+        if self._repository is None:
+            raise RuntimeError("持久化任务仓库未配置")
+        self._repository.save_with_documents(job, documents, versions)
+
+    def discard_unpersisted(self, job_id: str) -> None:
+        """清除上传事务失败后尚未调度的任务缓存。"""
+        with self._lock:
+            self._jobs.pop(job_id, None)
 
     def save(self, job: Job) -> None:
         if job.tenant_id is not None and self._repository is not None:

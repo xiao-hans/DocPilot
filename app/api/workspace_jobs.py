@@ -3,22 +3,32 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import shutil
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.dependencies import TenantContext, get_tenant_context, require_csrf
 from app.config import MAX_FILES_PER_JOB, MAX_UPLOAD_MB, OUTPUT_DIR, UPLOAD_DIR
 from app.models.job import JobStatus
+from app.models.document import Document, DocumentVersion
 from app.models.schema import validate_fields
 from app.services import ExcelBuilder
 from app.services.job_manager import get_job_manager
 
 router = APIRouter(prefix="/api/v1/tenants/{tenant_id}/jobs", tags=["jobs"])
 _ALLOWED_EXTS = {".pdf", ".png", ".jpg", ".jpeg"}
+_MEDIA_TYPES = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+}
 
 
 @router.post("", status_code=201)
@@ -66,21 +76,48 @@ async def create_job(
         fields=validated_fields,
         tenant_id=context.tenant.id,
         owner_id=context.auth.user.id,
+        persist=False,
     )
     upload_dir = UPLOAD_DIR / context.tenant.id / job.id
+    documents: list[Document] = []
+    versions: list[DocumentVersion] = []
     try:
         upload_dir.mkdir(parents=True, exist_ok=False)
         for (filename, content), finfo in zip(checked, job.files, strict=True):
             destination = upload_dir / f"{uuid.uuid4().hex}{Path(filename).suffix.lower()}"
             destination.write_bytes(content)
             finfo.path = str(destination.resolve())
-        manager.save(job)
-    except OSError as exc:
+            now = datetime.now(timezone.utc)
+            document = Document(
+                id=uuid.uuid4().hex,
+                tenant_id=context.tenant.id,
+                owner_id=context.auth.user.id,
+                status="active",
+                created_at=now,
+            )
+            documents.append(document)
+            versions.append(
+                DocumentVersion(
+                    id=uuid.uuid4().hex,
+                    document_id=document.id,
+                    tenant_id=context.tenant.id,
+                    job_id=job.id,
+                    revision=1,
+                    original_filename=filename,
+                    storage_key=destination.resolve()
+                    .relative_to(UPLOAD_DIR.resolve())
+                    .as_posix(),
+                    checksum=hashlib.sha256(content).hexdigest(),
+                    media_type=_MEDIA_TYPES[Path(filename).suffix.lower()],
+                    size_bytes=len(content),
+                    created_at=now,
+                )
+            )
+        manager.save_with_documents(job, documents, versions)
+    except (OSError, SQLAlchemyError, ValueError, RuntimeError) as exc:
         shutil.rmtree(upload_dir, ignore_errors=True)
-        job.status = JobStatus.FAILED
-        job.error = "文件保存失败"
-        manager.save(job)
-        raise HTTPException(status_code=500, detail="文件保存失败") from exc
+        manager.discard_unpersisted(job.id)
+        raise HTTPException(status_code=500, detail="文件或任务元数据保存失败") from exc
 
     background_tasks.add_task(manager.process, job.id)
     return {"job_id": job.id, "status": "queued"}

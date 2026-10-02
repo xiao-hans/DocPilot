@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from app.db import SessionLocal
+from app.models.document import Document, DocumentVersion
 from app.models.job import FileInfo, Job, JobStatus, Progress
 from app.models.persistent_job import PersistentJob
 from app.models.schema import FieldDefinition
@@ -18,7 +19,14 @@ class JobRepository:
         self._sessions = sessions
 
     def save(self, job: Job, tenant_id: str, owner_id: str | None) -> None:
-        snapshot = {
+        snapshot = self._snapshot(job)
+        with self._sessions() as db:
+            self._save_job_record(db, job, tenant_id, owner_id, snapshot)
+            db.commit()
+
+    @staticmethod
+    def _snapshot(job: Job) -> dict:
+        return {
             "fields": [field.model_dump() for field in job.fields],
             "files": [
                 {
@@ -38,10 +46,13 @@ class JobRepository:
             "error": job.error,
             "excel_path": job.excel_path,
         }
-        with self._sessions() as db:
-            record = db.get(PersistentJob, job.id)
-            if record is None:
-                record = PersistentJob(
+
+    @staticmethod
+    def _save_job_record(db, job: Job, tenant_id: str, owner_id: str | None, snapshot: dict) -> None:
+        record = db.get(PersistentJob, job.id)
+        if record is None:
+            db.add(
+                PersistentJob(
                     id=job.id,
                     tenant_id=tenant_id,
                     owner_id=owner_id,
@@ -49,12 +60,47 @@ class JobRepository:
                     created_at=datetime.fromtimestamp(job.created_at, tz=timezone.utc),
                     snapshot=snapshot,
                 )
-                db.add(record)
-            else:
-                if record.tenant_id != tenant_id:
-                    raise ValueError("任务租户归属不可变更")
-                record.status = job.status.value
-                record.snapshot = snapshot
+            )
+            return
+        if record.tenant_id != tenant_id:
+            raise ValueError("任务租户归属不可变更")
+        record.status = job.status.value
+        record.snapshot = snapshot
+
+    def save_with_documents(
+        self,
+        job: Job,
+        documents: list[Document],
+        versions: list[DocumentVersion],
+    ) -> None:
+        """在一个事务中保存任务快照、文档与文件版本元数据。"""
+        tenant_id = job.tenant_id
+        owner_id = job.owner_id
+        if tenant_id is None or len(documents) != len(versions) or not documents:
+            raise ValueError("任务文档元数据不完整")
+
+        document_ids = {document.id for document in documents}
+        if len(document_ids) != len(documents):
+            raise ValueError("文档 ID 重复")
+        for document in documents:
+            if document.tenant_id != tenant_id or document.owner_id != owner_id:
+                raise ValueError("文档租户或所有者与任务不一致")
+        version_document_ids = [version.document_id for version in versions]
+        if len(set(version_document_ids)) != len(versions) or set(version_document_ids) != document_ids:
+            raise ValueError("每份文档必须且只能关联一个新文件版本")
+        for version in versions:
+            if (
+                version.tenant_id != tenant_id
+                or version.document_id not in document_ids
+                or version.job_id != job.id
+            ):
+                raise ValueError("文件版本租户、文档或任务关联不一致")
+
+        snapshot = self._snapshot(job)
+        with self._sessions() as db:
+            self._save_job_record(db, job, tenant_id, owner_id, snapshot)
+            db.add_all(documents)
+            db.add_all(versions)
             db.commit()
 
     def get(self, job_id: str, tenant_id: str) -> Job | None:
