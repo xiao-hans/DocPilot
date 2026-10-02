@@ -98,6 +98,15 @@ def require_roles(*roles: str):
     return _check
 
 
+def require_platform_admin(
+    auth: AuthContext = Depends(get_auth_context),
+) -> AuthContext:
+    """平台身份只用于运营视图：它不等于任何租户的数据访问权（docs/03 §5）。"""
+    if not auth.user.is_platform_admin:
+        raise HTTPException(status_code=403, detail="需要平台管理员身份")
+    return auth
+
+
 def ensure_legacy_demo_enabled() -> None:
     """旧版无租户任务 API 仅允许在开发环境使用。"""
     if APP_ENV != "development":

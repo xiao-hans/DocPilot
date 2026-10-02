@@ -15,6 +15,7 @@ from app.api import auth, members, routes, tenants, workspace_jobs
 from app.config import APP_ENV, BASE_DIR, DATABASE_URL, UPLOAD_DIR
 from app.contexts.automation import api as automation_api
 from app.contexts.documents import api as documents_api
+from app.contexts.operations import api as operations_api
 from app.contexts.processing import service as processing
 from app.contexts.review import api as review_api
 from app.contexts.search import api as search_api
@@ -49,6 +50,9 @@ app.include_router(members.invitations_router)
 app.include_router(templates_api.router)
 app.include_router(review_api.router)
 app.include_router(documents_api.router)
+app.include_router(operations_api.system_router)
+app.include_router(operations_api.router)
+app.include_router(operations_api.platform_router)
 app.include_router(search_api.router)
 app.include_router(automation_api.router)
 

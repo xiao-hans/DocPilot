@@ -33,6 +33,7 @@ METADATA_KEYS: dict[str, frozenset[str]] = {
     "document.metadata_updated": frozenset({"changed", "rule_id"}),
     "rule.created": frozenset({"event_type", "action_type", "version"}),
     "rule.updated": frozenset({"changed", "version"}),
+    "platform.usage_viewed": frozenset({"scope", "window_days", "rows"}),
     "automation.dispatched": frozenset({"consumed", "applied", "skipped", "failed"}),
     "document.exported": frozenset({"format"}),
     "job.exported": frozenset({"format"}),
