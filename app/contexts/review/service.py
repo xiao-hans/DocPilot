@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.contexts.review import repository
 from app.contexts.review.domain import RESULT_STATES, ExtractionResult, ResultRevision
+from app.contexts.search import service as search
 from app.errors import AccessError
 from app.models.document import DocumentVersion
 from app.services import audit, outbox
@@ -21,6 +22,31 @@ REVIEW_ROLES = ("reviewer", "admin", "owner")
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _reindex(
+    db: Session,
+    *,
+    tenant_id: str,
+    result: ExtractionResult,
+    values: dict[str, Any],
+    now: datetime,
+) -> None:
+    """把检索索引与结果写入绑在同一事务里：异步补索引会留下"搜不到刚改完的值"。"""
+    version = db.get(DocumentVersion, result.document_version_id)
+    if version is None or version.tenant_id != tenant_id:
+        return
+    text = repository.get_text(db, tenant_id, result.document_version_id)
+    search.reindex_version(
+        db,
+        tenant_id=tenant_id,
+        document_id=version.document_id,
+        document_version_id=version.id,
+        filename=result.filename,
+        text=text.text if text is not None else "",
+        values=values,
+        now=now,
+    )
 
 
 def record_machine_result(
@@ -60,6 +86,7 @@ def record_machine_result(
 
     result = repository.by_job_and_version(db, tenant_id, job_id, version.id)
     if result is not None and result.state not in ("machine",):
+        _reindex(db, tenant_id=tenant_id, result=result, values=result.values, now=now)
         return result
 
     template_version_id = _template_version_id(db, tenant_id, job_id)
@@ -109,6 +136,7 @@ def record_machine_result(
         )
         if first is not None:
             first.values = values
+    _reindex(db, tenant_id=tenant_id, result=result, values=values, now=now)
     return result
 
 
@@ -311,6 +339,7 @@ def revise(
             aggregate_id=result.id,
             payload={"revision_no": new_revision, "job_id": result.job_id},
         )
+        _reindex(db, tenant_id=tenant_id, result=result, values=clean, now=now)
         db.commit()
     except IntegrityError as exc:
         db.rollback()

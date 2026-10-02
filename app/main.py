@@ -13,9 +13,11 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api import auth, members, routes, tenants, workspace_jobs
 from app.config import APP_ENV, BASE_DIR, DATABASE_URL, UPLOAD_DIR
+from app.contexts.automation import api as automation_api
 from app.contexts.documents import api as documents_api
 from app.contexts.processing import service as processing
 from app.contexts.review import api as review_api
+from app.contexts.search import api as search_api
 from app.contexts.templates import api as templates_api
 from app.db import SessionLocal, initialize_development_schema
 from app.errors import AccessError
@@ -47,6 +49,8 @@ app.include_router(members.invitations_router)
 app.include_router(templates_api.router)
 app.include_router(review_api.router)
 app.include_router(documents_api.router)
+app.include_router(search_api.router)
+app.include_router(automation_api.router)
 
 
 @app.exception_handler(AccessError)

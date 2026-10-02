@@ -187,6 +187,48 @@ def list_documents(
     return {"total": total, "items": items}
 
 
+def add_label(
+    db: Session,
+    *,
+    tenant_id: str,
+    document_id: str,
+    label: str,
+    actor_user_id: str | None,
+    rule_id: str,
+    now: datetime,
+) -> bool:
+    """规则动作追加单个标签：已存在则不动，标签位已满则让本次运行失败可查。"""
+    value = (label or "").strip()
+    if not 1 <= len(value) <= MAX_LABEL_CHARS:
+        raise AccessError(422, f"单个标签不得超过 {MAX_LABEL_CHARS} 个字符")
+    document = db.scalar(
+        select(Document).where(Document.id == document_id, Document.tenant_id == tenant_id)
+    )
+    if document is None:
+        raise AccessError(404, "文档不存在")
+    current = labels_of(db, tenant_id, [document_id]).get(document_id, [])
+    if value in current:
+        return False
+    if len(current) >= MAX_LABELS:
+        raise AccessError(422, f"标签数量不得超过 {MAX_LABELS} 个")
+    db.add(
+        DocumentLabel(
+            document_id=document.id, tenant_id=tenant_id, label=value, created_at=now
+        )
+    )
+    document.updated_at = now
+    audit.record(
+        db,
+        tenant_id=tenant_id,
+        actor_user_id=actor_user_id,
+        action="document.metadata_updated",
+        object_type="document",
+        object_id=document.id,
+        metadata={"changed": ["labels"], "rule_id": rule_id},
+    )
+    return True
+
+
 def update_metadata(
     db: Session,
     *,

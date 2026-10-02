@@ -28,7 +28,9 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import delete  # noqa: E402
 
 from app.contexts.processing.domain import JobAttempt
+from app.contexts.automation.domain import EventRule, NotificationRequest, RuleRun
 from app.contexts.review.domain import DocumentText, ExtractionResult, ResultRevision
+from app.contexts.search.domain import SearchEntry
 from app.contexts.templates.domain import Template, TemplateVersion
 from app.db import SessionLocal, engine, initialize_development_schema  # noqa: E402
 from app.main import app  # noqa: E402
@@ -48,6 +50,10 @@ PASSWORD = "test-password-1234"
 
 # 先删子表再删父表，满足 SQLite 外键约束。
 _TABLES_IN_DELETE_ORDER = (
+    RuleRun.__table__,
+    NotificationRequest.__table__,
+    SearchEntry.__table__,
+    EventRule.__table__,
     ResultRevision.__table__,
     ExtractionResult.__table__,
     DocumentText.__table__,
@@ -85,10 +91,12 @@ def clean_job_manager():
     with manager._lock:
         manager._jobs.clear()
         manager._processing.clear()
+        manager._staged.clear()
     yield
     with manager._lock:
         manager._jobs.clear()
         manager._processing.clear()
+        manager._staged.clear()
 
 
 def _login(
