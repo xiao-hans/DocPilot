@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from app.config import MAX_FILES_PER_JOB, MAX_UPLOAD_MB, OUTPUT_DIR, UPLOAD_DIR
@@ -13,8 +13,12 @@ from app.models.job import JobStatus
 from app.models.schema import validate_fields
 from app.services import ExcelBuilder
 from app.services.job_manager import get_job_manager
+from app.api.dependencies import ensure_legacy_demo_enabled
 
-router = APIRouter(prefix="/api/jobs")
+router = APIRouter(
+    prefix="/api/jobs",
+    dependencies=[Depends(ensure_legacy_demo_enabled)],
+)
 
 # API 层收紧后的允许扩展名（比 config.ALLOWED_EXTENSIONS 更窄）
 _ALLOWED_EXTS = {".pdf", ".png", ".jpg", ".jpeg"}

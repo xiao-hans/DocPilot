@@ -10,6 +10,7 @@ import UploadCard from './components/UploadCard.vue'
 import ProcessStatus from './components/ProcessStatus.vue'
 import ResultPreview from './components/ResultPreview.vue'
 import DownloadButton from './components/DownloadButton.vue'
+import AuthGate from './components/AuthGate.vue'
 import { INVOICE_FIELDS, type FieldDefinition, type ResultRow } from './api/client'
 import { useJobPolling } from './composables/useJobPolling'
 
@@ -49,6 +50,10 @@ const warningCount = computed(() => {
   return rowWarnings + (polling.state.value.result?.warnings.length ?? 0)
 })
 
+function changeTenant(event: Event, selectTenant: (id: string) => void) {
+  selectTenant((event.target as HTMLSelectElement).value)
+}
+
 // 成功：状态幕停留约 650ms 展示第 5 步完成，再切到结果幕
 watch(
   () => polling.state.value.status,
@@ -63,11 +68,32 @@ watch(
 </script>
 
 <template>
+  <AuthGate>
+    <template #default="{ user, tenant, tenants, selectTenant, logout }">
   <div class="flex min-h-screen flex-col bg-canvas">
     <!-- 顶栏 -->
     <header class="border-b border-edge bg-surface">
       <div class="mx-auto flex w-full max-w-[920px] items-center px-4 py-4 sm:px-8">
         <BrandMark />
+        <div class="ml-auto flex items-center gap-3">
+          <label class="sr-only" for="active-workspace">当前工作空间</label>
+          <select
+            id="active-workspace"
+            class="max-w-[190px] rounded-control border border-edge bg-surface px-3 py-2 text-xs text-primary"
+            :value="tenant.id"
+            @change="changeTenant($event, selectTenant)"
+          >
+            <option v-for="item in tenants" :key="item.id" :value="item.id">{{ item.name }}</option>
+          </select>
+          <span class="hidden text-xs text-muted sm:inline">{{ user.email }}</span>
+          <button
+            class="rounded-control border border-edge px-3 py-2 text-xs text-secondary transition-colors hover:border-brand hover:text-brand"
+            type="button"
+            @click="logout"
+          >
+            退出
+          </button>
+        </div>
       </div>
     </header>
 
@@ -128,8 +154,10 @@ watch(
     <!-- 页脚 -->
     <footer class="border-t border-edge">
       <p class="mx-auto w-full max-w-[920px] px-4 py-4 text-center text-xs text-muted sm:px-8">
-        DocAI 演示版 · 数据仅在本机处理，不上传云端
+        DocPilot · 当前工作空间拥有独立的文档与处理记录
       </p>
     </footer>
   </div>
+    </template>
+  </AuthGate>
 </template>

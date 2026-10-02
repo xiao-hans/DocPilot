@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Callable
 
 from app.config import EXTRACTOR_MODE
 from app.models.job import Job, JobStatus, Progress
@@ -19,13 +20,20 @@ class DocumentPipeline:
         self,
         dispatcher: ParserDispatcher | None = None,
         extractor: ExtractorBase | None = None,
+        on_update: Callable[[Job], None] | None = None,
     ) -> None:
         self.dispatcher = dispatcher or get_dispatcher()
         self.extractor = extractor or get_extractor(EXTRACTOR_MODE)
+        self.on_update = on_update
+
+    def _notify(self, job: Job) -> None:
+        if self.on_update is not None:
+            self.on_update(job)
 
     def run(self, job: Job) -> Job:
         job.status = JobStatus.PROCESSING
         job.result = []
+        self._notify(job)
 
         errors_count = 0
 
@@ -33,6 +41,7 @@ class DocumentPipeline:
             try:
                 # --- 解析 ---
                 job.progress = Progress.PARSING
+                self._notify(job)
                 parse_result = self.dispatcher.parse(Path(finfo.path))
 
                 # 回填 FileInfo
@@ -43,33 +52,38 @@ class DocumentPipeline:
 
                 # --- 提取 ---
                 job.progress = Progress.EXTRACTING
+                self._notify(job)
                 extract = self.extractor.extract(
                     parse_result.text, job.fields, parse_result.metadata
                 )
 
                 # 生成结果行
                 row = {
-                    "file": parse_result.metadata.get("filename", finfo.name),
+                    "file": finfo.name,
                     "values": extract.values,
                     "warnings": extract.warnings,
                 }
                 job.result.append(row)
+                self._notify(job)
 
             except ParseError as exc:
                 finfo.error = str(exc)
                 job.warnings.append(f"{finfo.name}: 解析失败 — {exc}")
                 errors_count += 1
+                self._notify(job)
 
             except ExtractionError as exc:
                 finfo.error = str(exc)
                 job.warnings.append(f"{finfo.name}: 提取失败 — {exc}")
                 errors_count += 1
+                self._notify(job)
 
             except Exception as exc:
                 # 未预期异常（如 OSError）归为单文件失败，保证流水线不中途崩溃
                 finfo.error = str(exc)
                 job.warnings.append(f"{finfo.name}: 未知错误 — {exc}")
                 errors_count += 1
+                self._notify(job)
 
         # 汇总状态
         if errors_count == 0 or errors_count < len(job.files):
@@ -79,4 +93,5 @@ class DocumentPipeline:
             job.error = f"全部 {errors_count} 个文件处理失败"
 
         job.progress = Progress.DONE
+        self._notify(job)
         return job

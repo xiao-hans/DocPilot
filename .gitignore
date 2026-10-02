@@ -8,6 +8,7 @@ __pycache__/
 # ===== 运行产物（用户上传 / 生成的 Excel）=====
 uploads/
 outputs/
+data/
 
 # ===== 配置与密钥 =====
 .env

@@ -36,6 +36,20 @@ def _env_float(name: str, default: float) -> float:
 # ---- 目录 ----
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", BASE_DIR / "uploads"))
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", BASE_DIR / "outputs"))
+DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
+
+# ---- 持久化与运行环境 ----
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    f"sqlite:///{(DATA_DIR / 'docpilot.sqlite3').as_posix()}",
+)
+BOOTSTRAP_TOKEN = os.getenv("BOOTSTRAP_TOKEN", "")
+AUTH_COOKIE_NAME = os.getenv("AUTH_COOKIE_NAME", "docpilot_session")
+AUTH_COOKIE_SECURE = os.getenv(
+    "AUTH_COOKIE_SECURE", "true" if APP_ENV == "production" else "false"
+).strip().lower() in {"1", "true", "yes", "on"}
+AUTH_SESSION_DAYS = _env_int("AUTH_SESSION_DAYS", 7)
 
 # ---- 上传限额 ----
 MAX_UPLOAD_MB = _env_int("MAX_UPLOAD_MB", 20)

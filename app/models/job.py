@@ -1,4 +1,4 @@
-"""任务数据模型（v1 内存态，无数据库）。"""
+"""处理任务的数据传输模型；持久化由 JobRepository 负责。"""
 
 from __future__ import annotations
 
@@ -50,10 +50,12 @@ class Job:
   warnings: list[str] = dc_field(default_factory=list)
   error: str | None = None
   excel_path: str | None = None
+  tenant_id: str | None = None
+  owner_id: str | None = None
 
   @staticmethod
   def new_id() -> str:
-    return uuid.uuid4().hex[:12]
+    return uuid.uuid4().hex
 
   @staticmethod
   def now() -> float:

@@ -1,20 +1,28 @@
-"""内存任务存储与处理入口（无数据库/Redis/Celery）。"""
+"""任务缓存、持久化仓库和处理入口。"""
 
 from __future__ import annotations
 
 import threading
 
-from app.models.job import FileInfo, Job, JobStatus
+from app.models.job import FileInfo, Job, JobStatus, Progress
 from app.models.schema import FieldDefinition
 from app.services.pipeline import DocumentPipeline
+from app.services.job_repository import JobRepository
 
 
 class JobManager:
-    """内存任务存储与处理入口（无数据库/Redis/Celery）。"""
+    """进程内缓存处理任务，并可将租户任务快照持久化到关系数据库。"""
 
-    def __init__(self, pipeline: DocumentPipeline | None = None) -> None:
+    def __init__(
+        self,
+        pipeline: DocumentPipeline | None = None,
+        repository: JobRepository | None = None,
+    ) -> None:
         self._jobs: dict[str, Job] = {}
         self._pipeline = pipeline or DocumentPipeline()
+        self._repository = repository
+        if repository is not None:
+            self._pipeline.on_update = self.save
         self._lock = threading.Lock()
         # 正在处理中的 job_id 集合：锁外执行 pipeline 时的并发重入门闩
         self._processing: set[str] = set()
@@ -23,6 +31,9 @@ class JobManager:
         self,
         files: list[tuple[str, str]],
         fields: list[FieldDefinition],
+        *,
+        tenant_id: str | None = None,
+        owner_id: str | None = None,
     ) -> Job:
         """files: [(原始文件名, 磁盘路径), ...]；fields: 已校验的 FieldDefinition 列表。"""
         job = Job(
@@ -30,17 +41,59 @@ class JobManager:
             fields=fields,
             created_at=Job.now(),
             files=[FileInfo(name=name, path=path) for name, path in files],
+            tenant_id=tenant_id,
+            owner_id=owner_id,
         )
         with self._lock:
             self._jobs[job.id] = job
+        if tenant_id is not None and self._repository is not None:
+            self._repository.save(job, tenant_id, owner_id)
         return job
 
-    def get_job(self, job_id: str) -> Job:
+    def save(self, job: Job) -> None:
+        if job.tenant_id is not None and self._repository is not None:
+            self._repository.save(job, job.tenant_id, job.owner_id)
+
+    def pending_job_ids(self) -> list[str]:
+        if self._repository is None:
+            return []
+        ids = self._repository.list_queued_ids()
+        for job_id in ids:
+            try:
+                job = self._repository.get_internal(job_id)
+                if job is None:
+                    continue
+                if job.status is JobStatus.PROCESSING:
+                    job.status = JobStatus.QUEUED
+                    job.progress = Progress.QUEUED
+                    self._repository.save(job, job.tenant_id or "", job.owner_id)
+                with self._lock:
+                    self._jobs[job_id] = job
+            except (KeyError, ValueError):
+                continue
+        return ids
+
+    def get_job(self, job_id: str, tenant_id: str | None = None) -> Job:
         """不存在抛 KeyError（API 层转 404）。"""
-        try:
-            return self._jobs[job_id]
-        except KeyError as err:
-            raise KeyError(f"任务不存在: {job_id}") from err
+        if tenant_id is not None and self._repository is not None:
+            persisted = self._repository.get(job_id, tenant_id)
+            if persisted is None:
+                raise KeyError(f"任务不存在: {job_id}")
+            with self._lock:
+                self._jobs[job_id] = persisted
+            return persisted
+        job = self._jobs.get(job_id)
+        if job is not None:
+            if tenant_id is not None and job.tenant_id != tenant_id:
+                raise KeyError(f"任务不存在: {job_id}")
+            return job
+        if tenant_id is None and self._repository is not None:
+            persisted = self._repository.get_internal(job_id)
+            if persisted is not None:
+                with self._lock:
+                    self._jobs[job_id] = persisted
+                return persisted
+        raise KeyError(f"任务不存在: {job_id}")
 
     def process(self, job_id: str) -> Job:
         """调 pipeline.run；线程安全 + 幂等：非 queued 或已在处理中直接返回。
@@ -57,8 +110,11 @@ class JobManager:
         try:
             return self._pipeline.run(job)
         finally:
-            with self._lock:
-                self._processing.discard(job_id)
+            try:
+                self.save(job)
+            finally:
+                with self._lock:
+                    self._processing.discard(job_id)
 
     def list_jobs(self) -> list[Job]:
         """按创建时间倒序。保留最近 100 个。"""
@@ -81,5 +137,5 @@ _job_manager: JobManager | None = None
 def get_job_manager() -> JobManager:
     global _job_manager
     if _job_manager is None:
-        _job_manager = JobManager()
+        _job_manager = JobManager(repository=JobRepository())
     return _job_manager
