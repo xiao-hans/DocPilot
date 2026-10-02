@@ -50,6 +50,9 @@ const warningCount = computed(() => {
   return rowWarnings + (polling.state.value.result?.warnings.length ?? 0)
 })
 
+// 部分成功是独立终态：结果可用，但必须让用户看见有文件失败（FR-020）
+const doneTitle = computed(() => (polling.state.value.status === 'partial' ? '部分处理成功' : '处理成功'))
+
 function changeTenant(event: Event, selectTenant: (id: string) => void) {
   selectTenant((event.target as HTMLSelectElement).value)
 }
@@ -58,7 +61,7 @@ function changeTenant(event: Event, selectTenant: (id: string) => void) {
 watch(
   () => polling.state.value.status,
   (status) => {
-    if (status === 'succeeded') {
+    if (status === 'succeeded' || status === 'partial') {
       window.setTimeout(() => {
         scene.value = 'result'
       }, 650)
@@ -133,7 +136,7 @@ watch(
                 </svg>
               </span>
               <div>
-                <p class="font-display text-lg font-semibold text-primary">处理成功</p>
+                <p class="font-display text-lg font-semibold text-primary">{{ doneTitle }}</p>
                 <p class="mt-1 font-mono text-xs text-muted tabular-nums">
                   {{ fileCount }} 个文件 · {{ fieldCount }} 个字段
                 </p>

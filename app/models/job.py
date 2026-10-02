@@ -15,6 +15,7 @@ class JobStatus(str, Enum):
   QUEUED = "queued"
   PROCESSING = "processing"
   SUCCEEDED = "succeeded"
+  PARTIAL = "partial"  # 部分文件失败，成功结果保留
   FAILED = "failed"
 
 
@@ -52,6 +53,10 @@ class Job:
   excel_path: str | None = None
   tenant_id: str | None = None
   owner_id: str | None = None
+  template_version_id: str | None = None
+  idempotency_key: str | None = None
+  attempt_count: int = 0
+  finished_at: float | None = None
 
   @staticmethod
   def new_id() -> str:
@@ -82,4 +87,8 @@ class Job:
       "result": self.result,
       "warnings": self.warnings,
       "error": self.error,
+      "template_version_id": self.template_version_id,
+      "idempotency_key": self.idempotency_key,
+      "attempt_count": self.attempt_count,
+      "finished_at": self.finished_at,
     }

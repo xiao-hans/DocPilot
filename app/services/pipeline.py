@@ -85,9 +85,11 @@ class DocumentPipeline:
                 errors_count += 1
                 self._notify(job)
 
-        # 汇总状态
-        if errors_count == 0 or errors_count < len(job.files):
+        # 汇总状态：部分文件失败不再冒充完全成功（FR-020 要求可区分部分成功）
+        if errors_count == 0:
             job.status = JobStatus.SUCCEEDED
+        elif errors_count < len(job.files):
+            job.status = JobStatus.PARTIAL
         else:
             job.status = JobStatus.FAILED
             job.error = f"全部 {errors_count} 个文件处理失败"

@@ -24,6 +24,12 @@ METADATA_KEYS: dict[str, frozenset[str]] = {
     "member.removed": frozenset({"role"}),
     "job.created": frozenset({"file_count"}),
     "job.excel_exported": frozenset(),
+    "job.retried": frozenset({"attempt_count"}),
+    "template.created": frozenset({"name"}),
+    "template.updated": frozenset({"name"}),
+    "template.published": frozenset({"revision"}),
+    "template.retired": frozenset({"name"}),
+    "template.copied": frozenset({"name"}),
 }
 
 

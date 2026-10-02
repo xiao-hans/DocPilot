@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
+from app.contexts.processing.domain import JobAttempt
 from app.db import SessionLocal
 from app.main import app
 from app.models.job import Job, JobStatus, Progress
@@ -117,7 +120,9 @@ def test_job_is_invisible_from_another_tenant(
 def test_interrupted_job_returns_to_queue_on_startup(
     owner_workspace: dict, sandbox: Path
 ) -> None:
-    """进程中断时留下的 processing 记录应在下次启动恢复阶段降级为 queued。"""
+    """进程中断留下的 processing 记录：超时的由回收退回 queued，未超时的不动（DOC-DD-004 §7.3）。"""
+    from app.contexts.processing import service as processing
+
     job = Job(
         id="a" * 32,
         fields=[],
@@ -131,11 +136,22 @@ def test_interrupted_job_returns_to_queue_on_startup(
 
     manager = get_job_manager()
     manager._jobs.pop(job.id, None)
-    assert job.id in manager.pending_job_ids()
+    # 没有尝试记录且未超时前不得被盲目重新排队：恢复入口统一由 reclaim 决定。
+    assert job.id not in manager.pending_job_ids()
+
+    processing.begin_attempt(job.id, job.tenant_id or "")
+    with SessionLocal() as db:
+        attempt = db.scalar(
+            select(JobAttempt).where(JobAttempt.job_id == job.id)
+        )
+        attempt.started_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        db.commit()
+        processing.reclaim_timeouts(db)
 
     recovered = manager.get_job(job.id, job.tenant_id or "")
     assert recovered.status is JobStatus.QUEUED
     assert recovered.tenant_id == job.tenant_id
+    assert job.id in manager.pending_job_ids()
 
 
 def test_anonymous_and_foreign_tenant_cannot_create_jobs(other_workspace: dict) -> None:

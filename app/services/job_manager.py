@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
+from app.contexts.processing import service as processing
 from app.models.job import FileInfo, Job, JobStatus, Progress
 from app.models.access import AuditEvent
 from app.models.document import Document, DocumentVersion
@@ -60,10 +62,11 @@ class JobManager:
         documents: list[Document],
         versions: list[DocumentVersion],
         audit_events: Sequence[AuditEvent] = (),
+        events: Sequence[Mapping[str, Any]] = (),
     ) -> None:
         if self._repository is None:
             raise RuntimeError("持久化任务仓库未配置")
-        self._repository.save_with_documents(job, documents, versions, audit_events)
+        self._repository.save_with_documents(job, documents, versions, audit_events, events)
 
     def discard_unpersisted(self, job_id: str) -> None:
         """清除上传事务失败后尚未调度的任务缓存。"""
@@ -75,23 +78,22 @@ class JobManager:
             self._repository.save(job, job.tenant_id, job.owner_id, audit_events)
 
     def pending_job_ids(self) -> list[str]:
+        """启动恢复：只重新调度 queued 任务。
+        卡在 processing 的任务由 reclaim_timeouts 统一收敛，这里不改状态，
+        否则崩溃循环会绕过尝试上限（DOC-DD-004 §5 规则 2）。
+        """
         if self._repository is None:
             return []
         ids = self._repository.list_queued_ids()
+        loaded: list[str] = []
         for job_id in ids:
-            try:
-                job = self._repository.get_internal(job_id)
-                if job is None:
-                    continue
-                if job.status is JobStatus.PROCESSING:
-                    job.status = JobStatus.QUEUED
-                    job.progress = Progress.QUEUED
-                    self._repository.save(job, job.tenant_id or "", job.owner_id)
-                with self._lock:
-                    self._jobs[job_id] = job
-            except (KeyError, ValueError):
+            job = self._repository.get_internal(job_id)
+            if job is None or job.status is not JobStatus.QUEUED:
                 continue
-        return ids
+            with self._lock:
+                self._jobs[job_id] = job
+            loaded.append(job_id)
+        return loaded
 
     def get_job(self, job_id: str, tenant_id: str | None = None) -> Job:
         """不存在抛 KeyError（API 层转 404）。"""
@@ -126,25 +128,48 @@ class JobManager:
         return persisted
 
     def process(self, job_id: str) -> Job:
-        """调 pipeline.run；线程安全 + 幂等：非 queued 或已在处理中直接返回。
+        """执行一次任务：先占用状态，再记录尝试，最后写回快照。
 
-        设计权衡：pipeline.run 可能耗时（OCR/解析秒级），故只在锁内完成
-        “检查 queued + 标记 processing”原子门闩，执行放在锁外，避免阻塞
-        create_job/list_jobs；_processing 集合防止同一任务并发重入。
+        设计权衡：pipeline.run 可能耗时（OCR/解析秒级），故锁内只做门闩检查，
+        执行放在锁外；跨进程的正确性由 ProcessingJob 状态条件更新保证
+        （DOC-DD-004 §5），内存门闩只是同进程的快速路径。
         """
         job = self.load_for_processing(job_id)
         with self._lock:
-            if job.status is not JobStatus.QUEUED or job_id in self._processing:
+            if job_id in self._processing:
                 return job
             self._processing.add(job_id)
         try:
-            return self._pipeline.run(job)
-        finally:
+            if job.tenant_id is None:
+                if job.status is not JobStatus.QUEUED:
+                    return job
+                return self._pipeline.run(job)
+            if not processing.claim_for_processing(job_id, job.tenant_id):
+                return self.load_for_processing(job_id)
+            job.status = JobStatus.PROCESSING
+            attempt = processing.begin_attempt(job_id, job.tenant_id)
             try:
-                self.save(job)
-            finally:
-                with self._lock:
-                    self._processing.discard(job_id)
+                result = self._pipeline.run(job)
+            except Exception as exc:
+                processing.finish_attempt(
+                    attempt,
+                    status="failed",
+                    job_status=JobStatus.FAILED.value,
+                    error=str(exc)[:500],
+                )
+                raise
+            processing.finish_attempt(
+                attempt,
+                status="succeeded" if result.status.value in ("succeeded", "partial") else "failed",
+                job_status=result.status.value,
+                error=result.error,
+                parse_modes=["ocr" if finfo.ocr_applied else "text" for finfo in result.files],
+            )
+            return result
+        finally:
+            with self._lock:
+                self._processing.discard(job_id)
+            self.save(job)
 
     def list_jobs(self) -> list[Job]:
         """按创建时间倒序。保留最近 100 个。"""

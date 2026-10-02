@@ -10,7 +10,7 @@ export interface FieldDefinition {
   description: string
 }
 
-export type JobStatus = 'queued' | 'processing' | 'succeeded' | 'failed'
+export type JobStatus = 'queued' | 'processing' | 'succeeded' | 'partial' | 'failed'
 export type JobProgress = 'queued' | 'parsing' | 'extracting' | 'excel' | 'done'
 
 export interface JobFileInfo {
@@ -37,11 +37,16 @@ export interface JobDto {
   result: ResultRow[] | null
   warnings: string[]
   error: string | null
+  template_version_id?: string | null
+  idempotency_key?: string | null
+  attempt_count?: number
+  finished_at?: number | null
 }
 
 export interface CreateJobResponse {
   job_id: string
   status: 'queued'
+  reused: boolean
 }
 
 export interface ResultDto {

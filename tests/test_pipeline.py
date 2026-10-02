@@ -277,7 +277,7 @@ def test_parser_failure_single_file_all_fail(tmp_path: Path):
 
 
 def test_parser_failure_mixed_partial_success(tmp_path: Path):
-    """两文件：一好一坏 → SUCCEEDED + 好文件结果保留 + 坏文件 finfo.error。"""
+    """两文件：一好一坏 → PARTIAL + 好文件结果保留 + 坏文件 finfo.error。"""
     good_pdf = tmp_path / "good.pdf"
     _make_invoice_pdf(good_pdf, invoice_no="01100200011100045239")
 
@@ -304,8 +304,8 @@ def test_parser_failure_mixed_partial_success(tmp_path: Path):
     )
     job = mgr.process(job.id)
 
-    # 部分成功仍为 SUCCEEDED
-    assert job.status == JobStatus.SUCCEEDED
+    # 部分成功必须是独立终态，不能冒充完全成功
+    assert job.status == JobStatus.PARTIAL
     assert job.progress == Progress.DONE
     assert job.result is not None
     assert len(job.result) == 1  # 只有好文件
@@ -344,7 +344,7 @@ def test_extractor_failure_single_file_all_fail(tmp_path: Path):
 
 
 def test_extractor_failure_mixed_partial_success(tmp_path: Path):
-    """两文件：一好一坏（extractor 只对第二个抛错）→ SUCCEEDED + 好文件结果保留。"""
+    """两文件：一好一坏（extractor 只对第二个抛错）→ PARTIAL + 好文件结果保留。"""
     pdf_a = tmp_path / "a.pdf"
     _make_invoice_pdf(pdf_a, invoice_no="01100200011100045239", total="¥1,000.00")
     pdf_b = tmp_path / "b.pdf"
@@ -374,7 +374,7 @@ def test_extractor_failure_mixed_partial_success(tmp_path: Path):
     )
     job = mgr.process(job.id)
 
-    assert job.status == JobStatus.SUCCEEDED  # 部分成功
+    assert job.status == JobStatus.PARTIAL
     assert job.result is not None
     assert len(job.result) == 1
     assert job.result[0]["values"]["发票号码"] == "01100200011100045239"

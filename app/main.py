@@ -13,9 +13,11 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api import auth, members, routes, tenants, workspace_jobs
 from app.config import APP_ENV, BASE_DIR, DATABASE_URL, UPLOAD_DIR
-from app.db import initialize_development_schema
+from app.contexts.processing import service as processing
+from app.contexts.templates import api as templates_api
+from app.db import SessionLocal, initialize_development_schema
+from app.errors import AccessError
 from app.services.job_manager import get_job_manager
-from app.services.membership import AccessError
 
 
 @asynccontextmanager
@@ -26,6 +28,8 @@ async def lifespan(app: FastAPI):
     if APP_ENV == "development":
         initialize_development_schema()
     manager = get_job_manager()
+    with SessionLocal() as db:
+        processing.reclaim_timeouts(db)
     for job_id in manager.pending_job_ids():
         asyncio.create_task(asyncio.to_thread(manager.process, job_id))
     yield
@@ -38,6 +42,7 @@ app.include_router(tenants.router)
 app.include_router(workspace_jobs.router)
 app.include_router(members.router)
 app.include_router(members.invitations_router)
+app.include_router(templates_api.router)
 
 
 @app.exception_handler(AccessError)

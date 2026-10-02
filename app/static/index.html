@@ -457,9 +457,9 @@
                 "状态: " + job.status + "  |  进度: " + job.progress,
                 "is-active",
               );
-              if (job.status === "succeeded" || job.status === "failed") {
+              if (job.status === "succeeded" || job.status === "partial" || job.status === "failed") {
                 document.getElementById("upload-btn").disabled = false;
-                if (job.status === "succeeded") {
+                if (job.status === "succeeded" || job.status === "partial") {
                   fetchResult(jobId);
                 } else {
                   showError("任务失败: " + (job.error || "未知错误"));

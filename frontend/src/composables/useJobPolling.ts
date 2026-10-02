@@ -19,6 +19,7 @@ export type PollStatus =
   | "idle"
   | "running"
   | "succeeded"
+  | "partial"
   | "failed"
   | "timeout"
   | "connection-error";
@@ -65,7 +66,7 @@ export function useJobPolling() {
       return false;
     }
 
-    if (job.status === "succeeded") {
+    if (job.status === "succeeded" || job.status === "partial") {
       stop();
       let result: ResultDto | null = null;
       try {
@@ -75,7 +76,7 @@ export function useJobPolling() {
       }
       state.value = {
         ...state.value,
-        status: "succeeded",
+        status: job.status === "partial" ? "partial" : "succeeded",
         job,
         result,
         progress: job.progress,

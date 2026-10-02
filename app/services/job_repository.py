@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
@@ -11,9 +11,14 @@ from sqlalchemy.orm import sessionmaker
 from app.db import SessionLocal
 from app.models.access import AuditEvent
 from app.models.document import Document, DocumentVersion
+from app.services import outbox
 from app.models.job import FileInfo, Job, JobStatus, Progress
 from app.models.persistent_job import PersistentJob
 from app.models.schema import FieldDefinition
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 class JobRepository:
@@ -67,6 +72,9 @@ class JobRepository:
                     owner_id=owner_id,
                     status=job.status.value,
                     created_at=datetime.fromtimestamp(job.created_at, tz=timezone.utc),
+                    attempt_count=job.attempt_count,
+                    idempotency_key=job.idempotency_key,
+                    template_version_id=job.template_version_id,
                     snapshot=snapshot,
                 )
             )
@@ -82,8 +90,9 @@ class JobRepository:
         documents: list[Document],
         versions: list[DocumentVersion],
         audit_events: Sequence[AuditEvent] = (),
+        events: Sequence[Mapping[str, Any]] = (),
     ) -> None:
-        """在一个事务中保存任务快照、文档、文件版本与审计事件。"""
+        """在一个事务中保存任务快照、文档、文件版本、审计与领域事件。"""
         tenant_id = job.tenant_id
         owner_id = job.owner_id
         if tenant_id is None or len(documents) != len(versions) or not documents:
@@ -112,6 +121,8 @@ class JobRepository:
             db.add_all(documents)
             db.add_all(versions)
             db.add_all(audit_events)
+            for spec in events:
+                outbox.record(db, **spec)
             db.commit()
 
     def get(self, job_id: str, tenant_id: str) -> Job | None:
@@ -133,7 +144,7 @@ class JobRepository:
                 fields=[FieldDefinition(**item) for item in snap["fields"]],
                 created_at=created_at.timestamp(),
                 files=[FileInfo(**item) for item in snap["files"]],
-                status=JobStatus(snap["status"]),
+                status=JobStatus(record.status),  # 状态列是权威来源，快照只作兼容读模型
                 progress=Progress(snap["progress"]),
                 result=snap.get("result"),
                 warnings=list(snap.get("warnings") or []),
@@ -141,6 +152,10 @@ class JobRepository:
                 excel_path=snap.get("excel_path"),
                 tenant_id=record.tenant_id,
                 owner_id=record.owner_id,
+                template_version_id=record.template_version_id,
+                idempotency_key=record.idempotency_key,
+                attempt_count=record.attempt_count,
+                finished_at=_as_utc(record.finished_at).timestamp() if record.finished_at else None,
             )
 
     def get_internal(self, job_id: str) -> Job | None:

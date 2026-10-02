@@ -53,6 +53,12 @@ AUTH_SESSION_DAYS = _env_int("AUTH_SESSION_DAYS", 7)
 # 邀请令牌有效期（天）：DOC-DD-003 §4.1，取值限制在 1-30，非法值回落默认。
 INVITE_TTL_DAYS = min(max(_env_int("INVITE_TTL_DAYS", 7), 1), 30)
 
+# ---- 处理可靠性：DOC-DD-004 §5 ----
+JOB_MAX_ATTEMPTS = min(max(_env_int("JOB_MAX_ATTEMPTS", 3), 1), 10)
+JOB_ATTEMPT_TIMEOUT_SECONDS = min(
+    max(_env_int("JOB_ATTEMPT_TIMEOUT_SECONDS", 600), 30), 3600
+)
+
 # ---- 上传限额 ----
 MAX_UPLOAD_MB = _env_int("MAX_UPLOAD_MB", 20)
 MAX_FILES_PER_JOB = _env_int("MAX_FILES_PER_JOB", 10)

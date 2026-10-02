@@ -2,32 +2,43 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
-from sqlalchemy.exc import SQLAlchemyError
-
-from app.api.dependencies import (
-    TenantContext,
-    get_tenant_context,
-    require_csrf,
-    require_roles,
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    UploadFile,
 )
+from fastapi.responses import FileResponse, JSONResponse
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
+
+from app.api.dependencies import TenantContext, require_csrf, require_roles
 from app.config import MAX_FILES_PER_JOB, MAX_UPLOAD_MB, OUTPUT_DIR, UPLOAD_DIR
-from app.models.job import JobStatus
+from app.contexts.processing import service as processing
+from app.contexts.templates import service as templates
+from app.db import get_db
 from app.models.document import Document, DocumentVersion
-from app.models.schema import validate_fields
+from app.models.job import Job, JobStatus
+from app.models.schema import FieldDefinition, validate_fields
 from app.services import ExcelBuilder, audit
 from app.services.document_storage import resolve_storage_path
 from app.services.job_manager import get_job_manager
 
 router = APIRouter(prefix="/api/v1/tenants/{tenant_id}/jobs", tags=["jobs"])
+READ_ROLES = ("owner", "admin", "member", "reviewer")
+SUBMIT_ROLES = ("owner", "admin", "member")
 _ALLOWED_EXTS = {".pdf", ".png", ".jpg", ".jpeg"}
 _MEDIA_TYPES = {
     ".pdf": "application/pdf",
@@ -41,14 +52,30 @@ _MEDIA_TYPES = {
 async def create_job(
     background_tasks: BackgroundTasks,
     files: list[UploadFile] | None = File(default=None),
-    fields: str = Form(...),
+    fields: str | None = Form(default=None),
+    template_version_id: str | None = Form(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     _csrf=Depends(require_csrf),
-    context: TenantContext = Depends(require_roles("owner", "admin", "member")),
+    context: TenantContext = Depends(require_roles(*SUBMIT_ROLES)),
+    db: Session = Depends(get_db),
 ):
+    """创建处理任务：字段来自内联定义或已发布模板版本，支持租户内幂等键。"""
+    tenant_id = context.tenant.id
+    actor_id = context.auth.user.id
+    key = idempotency_key.strip() if idempotency_key is not None else None
+    if key is not None and not 1 <= len(key) <= 200:
+        raise HTTPException(status_code=422, detail="Idempotency-Key 长度需为 1-200 个字符")
+    if key:
+        existing = processing.find_by_idempotency_key(db, tenant_id, key)
+        if existing is not None:
+            return _reused(existing)
+
     if not files:
         raise HTTPException(status_code=400, detail="未上传任何文件")
     if len(files) > MAX_FILES_PER_JOB:
-        raise HTTPException(status_code=400, detail=f"文件数量超过限制（最多 {MAX_FILES_PER_JOB} 个）")
+        raise HTTPException(
+            status_code=400, detail=f"文件数量超过限制（最多 {MAX_FILES_PER_JOB} 个）"
+        )
 
     checked: list[tuple[str, bytes]] = []
     seen_names: set[str] = set()
@@ -66,27 +93,41 @@ async def create_job(
         while chunk := await upload.read(1024 * 1024):
             size += len(chunk)
             if size > limit:
-                raise HTTPException(status_code=413, detail=f"文件过大: {filename}（最大 {MAX_UPLOAD_MB} MB）")
+                raise HTTPException(
+                    status_code=413, detail=f"文件过大: {filename}（最大 {MAX_UPLOAD_MB} MB）"
+                )
             chunks.append(chunk)
         checked.append((filename, b"".join(chunks)))
 
-    try:
-        fields_list = json.loads(fields)
-        validated_fields = validate_fields(fields_list)
-    except (json.JSONDecodeError, TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=f"字段定义无效: {exc}") from exc
+    frozen_version_id: str | None = None
+    if template_version_id is not None:
+        version = templates.resolve_for_job(
+            db, tenant_id=tenant_id, template_version_id=template_version_id
+        )
+        validated_fields = [FieldDefinition(**item) for item in version["fields"]]
+        frozen_version_id = version["id"]
+        if fields is not None and _parse_fields(fields) != validated_fields:
+            raise HTTPException(status_code=422, detail="fields 与模板版本字段不一致")
+    elif fields is not None:
+        validated_fields = _parse_fields(fields)
+    else:
+        raise HTTPException(status_code=422, detail="必须提供 fields 或 template_version_id")
 
     manager = get_job_manager()
     job = manager.create_job(
         files=[(name, "") for name, _content in checked],
         fields=validated_fields,
-        tenant_id=context.tenant.id,
-        owner_id=context.auth.user.id,
+        tenant_id=tenant_id,
+        owner_id=actor_id,
         persist=False,
     )
-    upload_dir = UPLOAD_DIR / context.tenant.id / job.id
+    job.template_version_id = frozen_version_id
+    job.idempotency_key = key
+
+    upload_dir = UPLOAD_DIR / tenant_id / job.id
     documents: list[Document] = []
     versions: list[DocumentVersion] = []
+    events: list[dict[str, Any]] = []
     try:
         upload_dir.mkdir(parents=True, exist_ok=False)
         for (filename, content), finfo in zip(checked, job.files, strict=True):
@@ -99,66 +140,99 @@ async def create_job(
             now = datetime.now(timezone.utc)
             document = Document(
                 id=uuid.uuid4().hex,
-                tenant_id=context.tenant.id,
-                owner_id=context.auth.user.id,
+                tenant_id=tenant_id,
+                owner_id=actor_id,
                 status="active",
                 created_at=now,
             )
-            documents.append(document)
-            versions.append(
-                DocumentVersion(
-                    id=uuid.uuid4().hex,
-                    document_id=document.id,
-                    tenant_id=context.tenant.id,
-                    job_id=job.id,
-                    revision=1,
-                    original_filename=filename,
-                    storage_key=storage_key,
-                    checksum=hashlib.sha256(content).hexdigest(),
-                    media_type=_MEDIA_TYPES[Path(filename).suffix.lower()],
-                    size_bytes=len(content),
-                    created_at=now,
-                )
+            document_version = DocumentVersion(
+                id=uuid.uuid4().hex,
+                document_id=document.id,
+                tenant_id=tenant_id,
+                job_id=job.id,
+                revision=1,
+                original_filename=filename,
+                storage_key=storage_key,
+                checksum=hashlib.sha256(content).hexdigest(),
+                media_type=_MEDIA_TYPES[Path(filename).suffix.lower()],
+                size_bytes=len(content),
+                created_at=now,
             )
+            documents.append(document)
+            versions.append(document_version)
+            events.append(
+                {
+                    "tenant_id": tenant_id,
+                    "event_type": "document.uploaded",
+                    "aggregate_type": "document_version",
+                    "aggregate_id": document_version.id,
+                    "payload": {
+                        "document_id": document.id,
+                        "job_id": job.id,
+                        "size_bytes": document_version.size_bytes,
+                    },
+                }
+            )
+        events.append(
+            {
+                "tenant_id": tenant_id,
+                "event_type": "job.queued",
+                "aggregate_type": "job",
+                "aggregate_id": job.id,
+                "payload": {
+                    "status": job.status.value,
+                    "file_count": len(versions),
+                    "template_version_id": frozen_version_id,
+                },
+            }
+        )
         manager.save_with_documents(
             job,
             documents,
             versions,
             audit_events=[
                 audit.new_event(
-                    tenant_id=context.tenant.id,
-                    actor_user_id=context.auth.user.id,
+                    tenant_id=tenant_id,
+                    actor_user_id=actor_id,
                     action="job.created",
                     object_type="job",
                     object_id=job.id,
                     metadata={"file_count": len(versions)},
                 )
             ],
+            events=events,
         )
     except (OSError, SQLAlchemyError, ValueError, RuntimeError) as exc:
         shutil.rmtree(upload_dir, ignore_errors=True)
         manager.discard_unpersisted(job.id)
+        if key:
+            db.rollback()
+            raced = processing.find_by_idempotency_key(db, tenant_id, key)
+            if raced is not None:
+                return _reused(raced)
         raise HTTPException(status_code=500, detail="文件或任务元数据保存失败") from exc
 
     background_tasks.add_task(manager.process, job.id)
-    return {"job_id": job.id, "status": "queued"}
+    return {"job_id": job.id, "status": "queued", "reused": False}
 
 
 @router.get("/{job_id}")
-def get_job(job_id: str, context: TenantContext = Depends(require_roles("owner", "admin", "member", "reviewer"))):
-    try:
-        job = get_job_manager().get_job(job_id, context.tenant.id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="任务不存在") from exc
-    return job.to_dict()
+def get_job(
+    job_id: str,
+    context: TenantContext = Depends(require_roles(*READ_ROLES)),
+    db: Session = Depends(get_db),
+):
+    job = _load_job(job_id, context)
+    payload = job.to_dict()
+    payload["attempts"] = processing.attempts_payload(db, job.id, context.tenant.id)
+    return payload
 
 
 @router.get("/{job_id}/result")
-def get_job_result(job_id: str, context: TenantContext = Depends(require_roles("owner", "admin", "member", "reviewer"))):
-    try:
-        job = get_job_manager().get_job(job_id, context.tenant.id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="任务不存在") from exc
+def get_job_result(
+    job_id: str, context: TenantContext = Depends(require_roles(*READ_ROLES))
+):
+    job = _load_job(job_id, context)
     return {
         "job_id": job.id,
         "status": job.status.value,
@@ -166,16 +240,43 @@ def get_job_result(job_id: str, context: TenantContext = Depends(require_roles("
         "result": job.result,
         "warnings": job.warnings,
         "error": job.error,
+        "template_version_id": job.template_version_id,
+        "attempt_count": job.attempt_count,
+        "finished_at": job.finished_at,
     }
 
 
-@router.get("/{job_id}/excel")
-def get_job_excel(job_id: str, context: TenantContext = Depends(require_roles("owner", "admin", "member", "reviewer"))):
+@router.post("/{job_id}/retry", status_code=202)
+def retry_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    _csrf=Depends(require_csrf),
+    context: TenantContext = Depends(require_roles(*SUBMIT_ROLES)),
+    db: Session = Depends(get_db),
+):
+    _load_job(job_id, context)
     try:
-        job = get_job_manager().get_job(job_id, context.tenant.id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="任务不存在") from exc
-    if job.status is not JobStatus.SUCCEEDED:
+        attempt_count = processing.requeue(db, job_id, context.tenant.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit.record_now(
+        tenant_id=context.tenant.id,
+        actor_user_id=context.auth.user.id,
+        action="job.retried",
+        object_type="job",
+        object_id=job_id,
+        metadata={"attempt_count": attempt_count},
+    )
+    background_tasks.add_task(get_job_manager().process, job_id)
+    return {"job_id": job_id, "status": "queued", "attempt_count": attempt_count}
+
+
+@router.get("/{job_id}/excel")
+def get_job_excel(
+    job_id: str, context: TenantContext = Depends(require_roles(*READ_ROLES))
+):
+    job = _load_job(job_id, context)
+    if job.status not in (JobStatus.SUCCEEDED, JobStatus.PARTIAL):
         raise HTTPException(status_code=404, detail="任务未完成或失败，无法导出 Excel")
 
     output_dir = OUTPUT_DIR / context.tenant.id
@@ -197,4 +298,25 @@ def get_job_excel(job_id: str, context: TenantContext = Depends(require_roles("o
         path,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=f"{job.id}.xlsx",
+    )
+
+
+def _load_job(job_id: str, context: TenantContext) -> Job:
+    try:
+        return get_job_manager().get_job(job_id, context.tenant.id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="任务不存在") from exc
+
+
+def _parse_fields(raw: str) -> list[FieldDefinition]:
+    try:
+        return validate_fields(json.loads(raw))
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"字段定义无效: {exc}") from exc
+
+
+def _reused(record: Any) -> JSONResponse:
+    return JSONResponse(
+        status_code=200,
+        content={"job_id": record.id, "status": record.status, "reused": True},
     )

@@ -16,21 +16,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import INVITE_TTL_DAYS
+from app.errors import AccessError
 from app.models.access import INVITABLE_ROLES, Invitation
 from app.models.account import Membership, Tenant, User
 from app.security import token_hash
 from app.services import audit
 
 INVALID_INVITATION = "邀请无效或已过期"
-
-
-class AccessError(Exception):
-    """带 HTTP 状态码的业务拒绝；由 main.py 的异常处理器翻译。"""
-
-    def __init__(self, status_code: int, detail: str) -> None:
-        super().__init__(detail)
-        self.status_code = status_code
-        self.detail = detail
 
 
 def _now() -> datetime:

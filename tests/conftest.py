@@ -27,11 +27,14 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy import delete  # noqa: E402
 
+from app.contexts.processing.domain import JobAttempt
+from app.contexts.templates.domain import Template, TemplateVersion
 from app.db import SessionLocal, engine, initialize_development_schema  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models.access import AuditEvent, Invitation  # noqa: E402
 from app.models.account import AuthSession, BootstrapState, Membership, Tenant, User  # noqa: E402
 from app.models.document import Document, DocumentVersion  # noqa: E402
+from app.models.outbox import DomainEventRecord  # noqa: E402
 from app.models.persistent_job import PersistentJob  # noqa: E402
 from app.security import hash_password  # noqa: E402
 from app.services.job_manager import get_job_manager  # noqa: E402
@@ -44,11 +47,15 @@ PASSWORD = "test-password-1234"
 
 # 先删子表再删父表，满足 SQLite 外键约束。
 _TABLES_IN_DELETE_ORDER = (
+    DomainEventRecord.__table__,
+    JobAttempt.__table__,
     AuditEvent.__table__,
     Invitation.__table__,
     DocumentVersion.__table__,
     Document.__table__,
     PersistentJob.__table__,
+    TemplateVersion.__table__,
+    Template.__table__,
     AuthSession.__table__,
     Membership.__table__,
     BootstrapState.__table__,
