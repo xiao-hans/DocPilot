@@ -121,13 +121,18 @@ async function extractDetail(res: Response): Promise<string> {
   return `请求失败（HTTP ${res.status}）`
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response
   try {
     const headers = new Headers(init?.headers)
     const method = (init?.method ?? 'GET').toUpperCase()
     if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && csrfToken) {
       headers.set('X-CSRF-Token', csrfToken)
+    }
+    // 字符串请求体一律按 JSON 送出：漏掉 Content-Type 时 FastAPI 不会解析 body，
+    // 前端只会看到一句难以理解的 422。FormData 必须留给浏览器自带 boundary。
+    if (typeof init?.body === 'string' && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json')
     }
     res = await fetch(path, { ...init, headers, credentials: 'same-origin' })
   } catch {
@@ -182,6 +187,12 @@ export async function logout(): Promise<void> {
   await requestJson<{ logged_out: boolean }>('/api/v1/auth/logout', { method: 'POST' })
   csrfToken = ''
   activeTenantId = ''
+}
+
+/** 当前工作空间必须已选定：租户级接口都靠它拼路径。 */
+export function activeTenantOrThrow(): string {
+  if (!activeTenantId) throw new ApiError(400, '请先选择工作空间')
+  return activeTenantId
 }
 
 /** POST /api/v1/tenants/{tenant_id}/jobs：上传文件列表 + fields JSON。 */

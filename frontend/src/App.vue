@@ -10,12 +10,21 @@ import UploadCard from './components/UploadCard.vue'
 import ProcessStatus from './components/ProcessStatus.vue'
 import ResultPreview from './components/ResultPreview.vue'
 import DownloadButton from './components/DownloadButton.vue'
+import ReviewPanel from './components/ReviewPanel.vue'
+import LibraryPanel from './components/LibraryPanel.vue'
 import AuthGate from './components/AuthGate.vue'
 import { INVOICE_FIELDS, type FieldDefinition, type ResultRow } from './api/client'
 import { useJobPolling } from './composables/useJobPolling'
 
 type Scene = 'upload' | 'processing' | 'result'
+type View = 'process' | 'review' | 'library'
 
+const view = ref<View>('process')
+const VIEWS: { value: View; label: string }[] = [
+  { value: 'process', label: '处理' },
+  { value: 'review', label: '复核' },
+  { value: 'library', label: '文档库' },
+]
 const scene = ref<Scene>('upload')
 const jobId = ref('')
 const uploadedCount = ref(0) // 上传时记录的文件总数，用于处理幕摘要
@@ -76,8 +85,20 @@ watch(
   <div class="flex min-h-screen flex-col bg-canvas">
     <!-- 顶栏 -->
     <header class="border-b border-edge bg-surface">
-      <div class="mx-auto flex w-full max-w-[920px] items-center px-4 py-4 sm:px-8">
+      <div class="mx-auto flex w-full max-w-[1100px] items-center px-4 py-4 sm:px-8">
         <BrandMark />
+        <nav class="ml-6 hidden items-center gap-1 sm:flex" aria-label="工作区">
+          <button
+            v-for="item in VIEWS"
+            :key="item.value"
+            class="rounded-control px-3 py-2 text-xs transition-colors"
+            :class="view === item.value ? 'bg-surface-2 text-primary' : 'text-secondary hover:text-primary'"
+            type="button"
+            @click="view = item.value"
+          >
+            {{ item.label }}
+          </button>
+        </nav>
         <div class="ml-auto flex items-center gap-3">
           <label class="sr-only" for="active-workspace">当前工作空间</label>
           <select
@@ -98,10 +119,28 @@ watch(
           </button>
         </div>
       </div>
+      <nav class="flex items-center gap-1 border-t border-edge px-4 py-2 sm:hidden" aria-label="工作区（窄屏）">
+        <button
+          v-for="item in VIEWS"
+          :key="`mobile-${item.value}`"
+          class="rounded-control px-3 py-1.5 text-xs transition-colors"
+          :class="view === item.value ? 'bg-surface-2 text-primary' : 'text-secondary'"
+          type="button"
+          @click="view = item.value"
+        >
+          {{ item.label }}
+        </button>
+      </nav>
     </header>
 
-    <!-- 三幕主区 -->
-    <main class="mx-auto flex w-full max-w-[920px] flex-1 flex-col justify-center px-4 py-16 sm:px-8">
+    <!-- 复核与文档库 -->
+    <main v-if="view !== 'process'" class="mx-auto w-full max-w-[1100px] px-4 py-10 sm:px-8">
+      <ReviewPanel v-if="view === 'review'" :role="tenant.role" />
+      <LibraryPanel v-else :role="tenant.role" />
+    </main>
+
+    <!-- 处理主流程 -->
+    <main v-else class="mx-auto flex w-full max-w-[920px] flex-1 flex-col justify-center px-4 py-16 sm:px-8">
       <Transition name="act" mode="out-in">
         <!-- 第一幕：上传 -->
         <UploadCard v-if="scene === 'upload'" key="upload" @job-created="onJobCreated" />
