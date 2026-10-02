@@ -30,6 +30,7 @@ from sqlalchemy import delete  # noqa: E402
 from app.db import SessionLocal, engine, initialize_development_schema  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models.account import AuthSession, BootstrapState, Membership, Tenant, User  # noqa: E402
+from app.models.document import Document, DocumentVersion  # noqa: E402
 from app.models.persistent_job import PersistentJob  # noqa: E402
 from app.security import hash_password  # noqa: E402
 from app.services.job_manager import get_job_manager  # noqa: E402
@@ -42,6 +43,8 @@ PASSWORD = "test-password-1234"
 
 # 先删子表再删父表，满足 SQLite 外键约束。
 _TABLES_IN_DELETE_ORDER = (
+    DocumentVersion.__table__,
+    Document.__table__,
     PersistentJob.__table__,
     AuthSession.__table__,
     Membership.__table__,

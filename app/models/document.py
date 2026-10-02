@@ -1,0 +1,72 @@
+"""文档与文件版本的持久化模型：文档是客户资产，任务只是它的一次处理。"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Integer,
+    String,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db import Base
+
+
+class Document(Base):
+    """租户内的一份文档；一次上传创建一份，后续版本挂在其下。"""
+
+    __tablename__ = "documents"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "id", name="uq_document_tenant_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    owner_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    versions: Mapped[list[DocumentVersion]] = relationship(
+        back_populates="document", cascade="all, delete-orphan"
+    )
+
+
+class DocumentVersion(Base):
+    """不可变的文件版本记录：数据库只存相对存储键，不存对外展示的绝对路径。"""
+
+    __tablename__ = "document_versions"
+    __table_args__ = (
+        UniqueConstraint("document_id", "revision", name="uq_document_version_revision"),
+        ForeignKeyConstraint(
+            ["tenant_id", "document_id"],
+            ["documents.tenant_id", "documents.id"],
+            name="fk_document_version_tenant_document",
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    document_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    # 产生该版本的任务；任务记录被清理时文档版本仍保留，因此是 SET NULL 而非 CASCADE。
+    job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("processing_jobs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    document: Mapped[Document] = relationship(back_populates="versions")
