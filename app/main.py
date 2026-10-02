@@ -7,14 +7,15 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import auth, routes, tenants, workspace_jobs
+from app.api import auth, members, routes, tenants, workspace_jobs
 from app.config import APP_ENV, BASE_DIR, DATABASE_URL, UPLOAD_DIR
 from app.db import initialize_development_schema
 from app.services.job_manager import get_job_manager
+from app.services.membership import AccessError
 
 
 @asynccontextmanager
@@ -35,6 +36,14 @@ app.include_router(routes.router)
 app.include_router(auth.router)
 app.include_router(tenants.router)
 app.include_router(workspace_jobs.router)
+app.include_router(members.router)
+app.include_router(members.invitations_router)
+
+
+@app.exception_handler(AccessError)
+async def access_error_handler(_request: Request, exc: AccessError) -> JSONResponse:
+    """服务层的业务拒绝统一翻译成 HTTP 响应，保持状态码语义单一来源。"""
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
 _FRONTEND_DIST = BASE_DIR / "frontend" / "dist"

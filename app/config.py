@@ -50,6 +50,8 @@ AUTH_COOKIE_SECURE = os.getenv(
     "AUTH_COOKIE_SECURE", "true" if APP_ENV == "production" else "false"
 ).strip().lower() in {"1", "true", "yes", "on"}
 AUTH_SESSION_DAYS = _env_int("AUTH_SESSION_DAYS", 7)
+# 邀请令牌有效期（天）：DOC-DD-003 §4.1，取值限制在 1-30，非法值回落默认。
+INVITE_TTL_DAYS = min(max(_env_int("INVITE_TTL_DAYS", 7), 1), 30)
 
 # ---- 上传限额 ----
 MAX_UPLOAD_MB = _env_int("MAX_UPLOAD_MB", 20)

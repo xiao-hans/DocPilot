@@ -86,6 +86,18 @@ def get_tenant_context(
     return TenantContext(auth=auth, tenant=tenant, membership=membership)
 
 
+def require_roles(*roles: str):
+    """DOC-DD-003 §3 角色矩阵判定入口：矩阵外的动作默认拒绝。"""
+    allowed = frozenset(roles)
+
+    def _check(context: TenantContext = Depends(get_tenant_context)) -> TenantContext:
+        if context.membership.role not in allowed:
+            raise HTTPException(status_code=403, detail="当前角色没有此操作权限")
+        return context
+
+    return _check
+
+
 def ensure_legacy_demo_enabled() -> None:
     """旧版无租户任务 API 仅允许在开发环境使用。"""
     if APP_ENV != "development":

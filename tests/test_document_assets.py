@@ -217,7 +217,7 @@ def test_metadata_transaction_failure_cleans_files_and_memory_job(
 ):
     pdf = make_invoice_pdf()
 
-    def fail_persist(self, job, documents, versions):
+    def fail_persist(self, job, documents, versions, audit_events=()):
         raise IntegrityError("INSERT", {}, RuntimeError("simulated database failure"))
 
     monkeypatch.setattr(JobRepository, "save_with_documents", fail_persist)

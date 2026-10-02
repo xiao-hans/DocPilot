@@ -29,6 +29,7 @@ from sqlalchemy import delete  # noqa: E402
 
 from app.db import SessionLocal, engine, initialize_development_schema  # noqa: E402
 from app.main import app  # noqa: E402
+from app.models.access import AuditEvent, Invitation  # noqa: E402
 from app.models.account import AuthSession, BootstrapState, Membership, Tenant, User  # noqa: E402
 from app.models.document import Document, DocumentVersion  # noqa: E402
 from app.models.persistent_job import PersistentJob  # noqa: E402
@@ -43,6 +44,8 @@ PASSWORD = "test-password-1234"
 
 # 先删子表再删父表，满足 SQLite 外键约束。
 _TABLES_IN_DELETE_ORDER = (
+    AuditEvent.__table__,
+    Invitation.__table__,
     DocumentVersion.__table__,
     Document.__table__,
     PersistentJob.__table__,
@@ -74,6 +77,27 @@ def clean_job_manager():
     with manager._lock:
         manager._jobs.clear()
         manager._processing.clear()
+
+
+def _login(
+    email: str,
+    tenant_id: str | None,
+    user_id: str,
+    *,
+    clients: list[TestClient],
+) -> dict:
+    """为已存在的账号开一个独立 cookie jar 并登录。"""
+    logged_in = TestClient(app)
+    clients.append(logged_in)
+    response = logged_in.post("/api/v1/auth/login", json={"email": email, "password": PASSWORD})
+    assert response.status_code == 200, response.text
+    return {
+        "client": logged_in,
+        "email": email,
+        "csrf": response.json()["csrf_token"],
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+    }
 
 
 @pytest.fixture()
@@ -121,7 +145,7 @@ def identity(request: pytest.FixtureRequest):
 
     request.addfinalizer(close_clients)
 
-    def _create(email: str, tenant_name: str) -> dict:
+    def _create(email: str, tenant_name: str, role: str = "member") -> dict:
         now = datetime.now(timezone.utc)
         with SessionLocal() as db:
             user = User(
@@ -142,7 +166,7 @@ def identity(request: pytest.FixtureRequest):
                         id=uuid.uuid4().hex,
                         tenant_id=tenant.id,
                         user_id=user.id,
-                        role="member",
+                        role=role,
                         status="active",
                         created_at=now,
                     ),
@@ -150,19 +174,73 @@ def identity(request: pytest.FixtureRequest):
             )
             db.commit()
 
-        logged_in = TestClient(app)
-        clients.append(logged_in)
-        response = logged_in.post(
-            "/api/v1/auth/login", json={"email": email, "password": PASSWORD}
+        return _login(
+            email, tenant.id, user.id, clients=clients
         )
-        assert response.status_code == 200, response.text
-        return {
-            "client": logged_in,
-            "email": email,
-            "csrf": response.json()["csrf_token"],
-            "tenant_id": tenant.id,
-            "user_id": user.id,
-        }
+
+    return _create
+
+
+@pytest.fixture()
+def member_of(request: pytest.FixtureRequest):
+    """把新用户加入既有租户并登录，用于按角色参数化权限矩阵。"""
+    clients: list[TestClient] = []
+
+    def close_clients() -> None:
+        for test_client in clients:
+            test_client.close()
+
+    request.addfinalizer(close_clients)
+
+    def _add(email: str, tenant_id: str, role: str = "member") -> dict:
+        now = datetime.now(timezone.utc)
+        with SessionLocal() as db:
+            user = User(
+                id=uuid.uuid4().hex,
+                email=email,
+                password_hash=hash_password(PASSWORD),
+                is_active=True,
+                created_at=now,
+            )
+            db.add(user)
+            db.add(
+                Membership(
+                    id=uuid.uuid4().hex,
+                    tenant_id=tenant_id,
+                    user_id=user.id,
+                    role=role,
+                    status="active",
+                    created_at=now,
+                )
+            )
+            db.commit()
+            user_id = user.id
+        return _login(email, tenant_id, user_id, clients=clients)
+
+    return _add
+
+
+@pytest.fixture()
+def platform_admin_without_membership(request: pytest.FixtureRequest):
+    """平台管理员但没有加入任何租户。"""
+    clients: list[TestClient] = []
+    request.addfinalizer(lambda: [client.close() for client in clients])
+
+    def _create(email: str = "ops@example.com") -> dict:
+        now = datetime.now(timezone.utc)
+        with SessionLocal() as db:
+            user = User(
+                id=uuid.uuid4().hex,
+                email=email,
+                password_hash=hash_password(PASSWORD),
+                is_active=True,
+                is_platform_admin=True,
+                created_at=now,
+            )
+            db.add(user)
+            db.commit()
+            user_id = user.id
+        return _login(email, None, user_id, clients=clients)
 
     return _create
 
@@ -171,6 +249,27 @@ def identity(request: pytest.FixtureRequest):
 def other_workspace(identity) -> dict:
     """另一个客户的租户，用于跨租户负向断言。"""
     return identity("other@example.com", "丙方空间")
+
+
+@pytest.fixture()
+def add_membership():
+    """把已存在的用户加入另一个租户，用于验证跨租户授权互不影响。"""
+
+    def _add(user_id: str, tenant_id: str, role: str = "member") -> None:
+        with SessionLocal() as db:
+            db.add(
+                Membership(
+                    id=uuid.uuid4().hex,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    role=role,
+                    status="active",
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
+            db.commit()
+
+    return _add
 
 
 @pytest.fixture()

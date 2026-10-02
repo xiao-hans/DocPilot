@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Sequence
 
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from app.db import SessionLocal
+from app.models.access import AuditEvent
 from app.models.document import Document, DocumentVersion
 from app.models.job import FileInfo, Job, JobStatus, Progress
 from app.models.persistent_job import PersistentJob
@@ -18,10 +20,17 @@ class JobRepository:
     def __init__(self, sessions: sessionmaker = SessionLocal) -> None:
         self._sessions = sessions
 
-    def save(self, job: Job, tenant_id: str, owner_id: str | None) -> None:
+    def save(
+        self,
+        job: Job,
+        tenant_id: str,
+        owner_id: str | None,
+        audit_events: Sequence[AuditEvent] = (),
+    ) -> None:
         snapshot = self._snapshot(job)
         with self._sessions() as db:
             self._save_job_record(db, job, tenant_id, owner_id, snapshot)
+            db.add_all(audit_events)
             db.commit()
 
     @staticmethod
@@ -72,8 +81,9 @@ class JobRepository:
         job: Job,
         documents: list[Document],
         versions: list[DocumentVersion],
+        audit_events: Sequence[AuditEvent] = (),
     ) -> None:
-        """在一个事务中保存任务快照、文档与文件版本元数据。"""
+        """在一个事务中保存任务快照、文档、文件版本与审计事件。"""
         tenant_id = job.tenant_id
         owner_id = job.owner_id
         if tenant_id is None or len(documents) != len(versions) or not documents:
@@ -101,6 +111,7 @@ class JobRepository:
             self._save_job_record(db, job, tenant_id, owner_id, snapshot)
             db.add_all(documents)
             db.add_all(versions)
+            db.add_all(audit_events)
             db.commit()
 
     def get(self, job_id: str, tenant_id: str) -> Job | None:

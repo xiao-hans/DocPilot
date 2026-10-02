@@ -13,12 +13,17 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPExcepti
 from fastapi.responses import FileResponse
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api.dependencies import TenantContext, get_tenant_context, require_csrf
+from app.api.dependencies import (
+    TenantContext,
+    get_tenant_context,
+    require_csrf,
+    require_roles,
+)
 from app.config import MAX_FILES_PER_JOB, MAX_UPLOAD_MB, OUTPUT_DIR, UPLOAD_DIR
 from app.models.job import JobStatus
 from app.models.document import Document, DocumentVersion
 from app.models.schema import validate_fields
-from app.services import ExcelBuilder
+from app.services import ExcelBuilder, audit
 from app.services.document_storage import resolve_storage_path
 from app.services.job_manager import get_job_manager
 
@@ -38,7 +43,7 @@ async def create_job(
     files: list[UploadFile] | None = File(default=None),
     fields: str = Form(...),
     _csrf=Depends(require_csrf),
-    context: TenantContext = Depends(get_tenant_context),
+    context: TenantContext = Depends(require_roles("owner", "admin", "member")),
 ):
     if not files:
         raise HTTPException(status_code=400, detail="未上传任何文件")
@@ -115,7 +120,21 @@ async def create_job(
                     created_at=now,
                 )
             )
-        manager.save_with_documents(job, documents, versions)
+        manager.save_with_documents(
+            job,
+            documents,
+            versions,
+            audit_events=[
+                audit.new_event(
+                    tenant_id=context.tenant.id,
+                    actor_user_id=context.auth.user.id,
+                    action="job.created",
+                    object_type="job",
+                    object_id=job.id,
+                    metadata={"file_count": len(versions)},
+                )
+            ],
+        )
     except (OSError, SQLAlchemyError, ValueError, RuntimeError) as exc:
         shutil.rmtree(upload_dir, ignore_errors=True)
         manager.discard_unpersisted(job.id)
@@ -126,7 +145,7 @@ async def create_job(
 
 
 @router.get("/{job_id}")
-def get_job(job_id: str, context: TenantContext = Depends(get_tenant_context)):
+def get_job(job_id: str, context: TenantContext = Depends(require_roles("owner", "admin", "member", "reviewer"))):
     try:
         job = get_job_manager().get_job(job_id, context.tenant.id)
     except KeyError as exc:
@@ -135,7 +154,7 @@ def get_job(job_id: str, context: TenantContext = Depends(get_tenant_context)):
 
 
 @router.get("/{job_id}/result")
-def get_job_result(job_id: str, context: TenantContext = Depends(get_tenant_context)):
+def get_job_result(job_id: str, context: TenantContext = Depends(require_roles("owner", "admin", "member", "reviewer"))):
     try:
         job = get_job_manager().get_job(job_id, context.tenant.id)
     except KeyError as exc:
@@ -151,7 +170,7 @@ def get_job_result(job_id: str, context: TenantContext = Depends(get_tenant_cont
 
 
 @router.get("/{job_id}/excel")
-def get_job_excel(job_id: str, context: TenantContext = Depends(get_tenant_context)):
+def get_job_excel(job_id: str, context: TenantContext = Depends(require_roles("owner", "admin", "member", "reviewer"))):
     try:
         job = get_job_manager().get_job(job_id, context.tenant.id)
     except KeyError as exc:
@@ -162,10 +181,18 @@ def get_job_excel(job_id: str, context: TenantContext = Depends(get_tenant_conte
     output_dir = OUTPUT_DIR / context.tenant.id
     output_dir.mkdir(parents=True, exist_ok=True)
     path = Path(job.excel_path) if job.excel_path and Path(job.excel_path).is_file() else None
+    audit_event = audit.new_event(
+        tenant_id=context.tenant.id,
+        actor_user_id=context.auth.user.id,
+        action="job.excel_exported",
+        object_type="job",
+        object_id=job.id,
+    )
     if path is None:
         path = ExcelBuilder().build(job, output_dir / f"{job.id}.xlsx")
         job.excel_path = str(path)
-        get_job_manager().save(job)
+    # 导出路径与下载审计在同一事务写入，避免审计失败时业务已提交的不一致。
+    get_job_manager().save(job, audit_events=[audit_event])
     return FileResponse(
         path,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

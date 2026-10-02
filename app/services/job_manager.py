@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Sequence
 
 from app.models.job import FileInfo, Job, JobStatus, Progress
+from app.models.access import AuditEvent
 from app.models.document import Document, DocumentVersion
 from app.models.schema import FieldDefinition
 from app.services.pipeline import DocumentPipeline
@@ -57,19 +59,20 @@ class JobManager:
         job: Job,
         documents: list[Document],
         versions: list[DocumentVersion],
+        audit_events: Sequence[AuditEvent] = (),
     ) -> None:
         if self._repository is None:
             raise RuntimeError("持久化任务仓库未配置")
-        self._repository.save_with_documents(job, documents, versions)
+        self._repository.save_with_documents(job, documents, versions, audit_events)
 
     def discard_unpersisted(self, job_id: str) -> None:
         """清除上传事务失败后尚未调度的任务缓存。"""
         with self._lock:
             self._jobs.pop(job_id, None)
 
-    def save(self, job: Job) -> None:
+    def save(self, job: Job, audit_events: Sequence[AuditEvent] = ()) -> None:
         if job.tenant_id is not None and self._repository is not None:
-            self._repository.save(job, job.tenant_id, job.owner_id)
+            self._repository.save(job, job.tenant_id, job.owner_id, audit_events)
 
     def pending_job_ids(self) -> list[str]:
         if self._repository is None:
@@ -101,16 +104,26 @@ class JobManager:
             return persisted
         job = self._jobs.get(job_id)
         if job is not None:
-            if tenant_id is not None and job.tenant_id != tenant_id:
+            # 租户归属必须完全相等：无租户上下文的历史入口不得读取租户任务（含内存缓存命中）。
+            if job.tenant_id != tenant_id:
                 raise KeyError(f"任务不存在: {job_id}")
             return job
-        if tenant_id is None and self._repository is not None:
-            persisted = self._repository.get_internal(job_id)
-            if persisted is not None:
-                with self._lock:
-                    self._jobs[job_id] = persisted
-                return persisted
         raise KeyError(f"任务不存在: {job_id}")
+
+    def load_for_processing(self, job_id: str) -> Job:
+        """Worker 内部装载路径：不受租户入口约束，但只用于处理已知 ID 的任务。"""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is not None:
+                return job
+        if self._repository is None:
+            raise KeyError(f"任务不存在: {job_id}")
+        persisted = self._repository.get_internal(job_id)
+        if persisted is None:
+            raise KeyError(f"任务不存在: {job_id}")
+        with self._lock:
+            self._jobs[job_id] = persisted
+        return persisted
 
     def process(self, job_id: str) -> Job:
         """调 pipeline.run；线程安全 + 幂等：非 queued 或已在处理中直接返回。
@@ -119,8 +132,8 @@ class JobManager:
         “检查 queued + 标记 processing”原子门闩，执行放在锁外，避免阻塞
         create_job/list_jobs；_processing 集合防止同一任务并发重入。
         """
+        job = self.load_for_processing(job_id)
         with self._lock:
-            job = self.get_job(job_id)
             if job.status is not JobStatus.QUEUED or job_id in self._processing:
                 return job
             self._processing.add(job_id)
