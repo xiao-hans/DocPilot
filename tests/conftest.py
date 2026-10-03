@@ -152,8 +152,12 @@ def client():
 
 @pytest.fixture()
 def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """把租户任务 API 的上传/输出目录指向用例私有目录。"""
-    monkeypatch.setattr("app.api.workspace_jobs.UPLOAD_DIR", tmp_path)
+    """把租户任务 API 的上传/输出目录指向用例私有目录。
+
+    上传目录改的是 `app.config`：写入端与解析端都按当前配置取根目录，只 patch 其中一侧
+    会让对象写到 tmp、读回真实目录。
+    """
+    monkeypatch.setattr("app.config.UPLOAD_DIR", tmp_path)
     monkeypatch.setattr("app.api.workspace_jobs.OUTPUT_DIR", tmp_path)
     return tmp_path
 

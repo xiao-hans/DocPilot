@@ -74,6 +74,16 @@ DISPATCH_POLL_SECONDS = min(max(_env_int("DISPATCH_POLL_SECONDS", 2), 1), 60)
 # 已发布但迟迟没人执行（消息丢失、broker 数据卷损毁）的派发行，超过该窗口退回 ready 重投。
 DISPATCH_REPUBLISH_SECONDS = min(max(_env_int("DISPATCH_REPUBLISH_SECONDS", 300), 60), 86400)
 
+# ---- 对象存储：DOC-DD-008 §5（阶段 G3）----
+# local = 本机目录（现有开发基线）；s3 = S3 兼容端点，本机开发指向 SeaweedFS。
+STORAGE_BACKEND = (os.getenv("STORAGE_BACKEND", "local").strip().lower() or "local")
+S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL", "").strip()
+S3_BUCKET = os.getenv("S3_BUCKET", "").strip()
+S3_REGION = os.getenv("S3_REGION", "us-east-1").strip() or "us-east-1"
+S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY", "")
+S3_SECRET_KEY = os.getenv("S3_SECRET_KEY", "")
+S3_KEY_PREFIX = os.getenv("S3_KEY_PREFIX", "docpilot").strip("/")
+
 # ---- 上传限额 ----
 MAX_UPLOAD_MB = _env_int("MAX_UPLOAD_MB", 20)
 MAX_FILES_PER_JOB = _env_int("MAX_FILES_PER_JOB", 10)

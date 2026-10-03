@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import logging
-import shutil  # noqa: E401  (失败清理使用)
 import uuid
 from datetime import datetime, timezone
 from dataclasses import replace
@@ -28,7 +28,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import TenantContext, require_csrf, require_roles
-from app.config import MAX_FILES_PER_JOB, MAX_UPLOAD_MB, OUTPUT_DIR, QUEUE_ENABLED, UPLOAD_DIR
+from app.config import MAX_FILES_PER_JOB, MAX_UPLOAD_MB, OUTPUT_DIR, QUEUE_ENABLED
 from app.contexts.processing import service as processing
 from app.contexts.templates import service as templates
 from app.db import get_db
@@ -38,8 +38,8 @@ from app.models.schema import FieldDefinition, validate_fields
 from app.contexts.review import service as review
 from app.services import ExcelBuilder, audit, csv_builder
 from app.services.export_files import build_atomically
-from app.services.document_storage import resolve_storage_path
 from app.services.job_manager import get_job_manager
+from app.services.object_storage import ObjectStorage, build_object_storage
 
 router = APIRouter(prefix="/api/v1/tenants/{tenant_id}/jobs", tags=["jobs"])
 READ_ROLES = ("owner", "admin", "member", "reviewer")
@@ -129,19 +129,22 @@ async def create_job(
     job.template_version_id = frozen_version_id
     job.idempotency_key = key
 
-    upload_dir = UPLOAD_DIR / tenant_id / job.id
+    storage = build_object_storage()
+    object_prefix = f"{tenant_id}/{job.id}"
     documents: list[Document] = []
     versions: list[DocumentVersion] = []
     events: list[dict[str, Any]] = []
     try:
-        upload_dir.mkdir(parents=True, exist_ok=False)
         for (filename, content), finfo in zip(checked, job.files, strict=True):
-            destination = upload_dir / f"{uuid.uuid4().hex}{Path(filename).suffix.lower()}"
-            destination.write_bytes(content)
-            finfo.path = str(destination.resolve())
-            storage_key = destination.resolve().relative_to(UPLOAD_DIR.resolve()).as_posix()
-            if resolve_storage_path(storage_key, UPLOAD_DIR) != destination.resolve():
-                raise ValueError("存储键与落盘位置不一致")
+            suffix = Path(filename).suffix.lower()
+            media_type = _MEDIA_TYPES[suffix]
+            # 对象键只由租户/任务/随机 UUID 组成：客户端文件名不参与寻址，
+            # 也就没有"文件名里带 .."之类的路径注入面。
+            object_key = f"{object_prefix}/{uuid.uuid4().hex}{suffix}"
+            storage.put(
+                object_key, io.BytesIO(content), content_type=media_type
+            )
+            finfo.storage_key = object_key
             now = datetime.now(timezone.utc)
             document = Document(
                 id=uuid.uuid4().hex,
@@ -157,9 +160,9 @@ async def create_job(
                 job_id=job.id,
                 revision=1,
                 original_filename=filename,
-                storage_key=storage_key,
+                storage_key=object_key,
                 checksum=hashlib.sha256(content).hexdigest(),
-                media_type=_MEDIA_TYPES[Path(filename).suffix.lower()],
+                media_type=media_type,
                 size_bytes=len(content),
                 created_at=now,
             )
@@ -212,7 +215,7 @@ async def create_job(
         logging.getLogger("docpilot.upload").exception(
             "任务保存失败 tenant_id=%s job_id=%s", tenant_id, job.id
         )
-        shutil.rmtree(upload_dir, ignore_errors=True)
+        _compensate_upload(storage, object_prefix)
         manager.discard_unpersisted(job.id)
         if key:
             db.rollback()
@@ -375,6 +378,20 @@ def export_job(
         metadata={"format": format},
     )
     return FileResponse(path, media_type=media, filename=f"{job.id}.{format}")
+
+
+def _compensate_upload(storage: ObjectStorage, prefix: str) -> None:
+    """收回已写入但没有任何记录指向的对象。
+
+    清理本身失败时只记日志：这次请求的失败原因已经确定，不能被补偿异常顶掉；
+    残留对象由 `scripts/storage_orphan_audit.py` 报出（只报告，不自动删）。
+    """
+    try:
+        storage.delete_prefix(prefix)
+    except (OSError, RuntimeError):
+        logging.getLogger("docpilot.upload").exception(
+            "孤儿对象清理失败 object_prefix=%s", prefix
+        )
 
 
 def _load_job(job_id: str, context: TenantContext) -> Job:

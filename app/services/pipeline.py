@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 from app.config import EXTRACTOR_MODE
-from app.models.job import Job, JobStatus, Progress
+from app.models.job import FileInfo, Job, JobStatus, Progress
 from app.services.extraction import ExtractionError, get_extractor
 from app.services.extraction.base import ExtractorBase
+from app.services.object_storage import get_object_storage
 from app.services.parsing import ParseError, get_dispatcher
 from app.services.parsing.dispatcher import ParserDispatcher
 
@@ -32,6 +34,23 @@ class DocumentPipeline:
         if self.on_update is not None:
             self.on_update(job)
 
+    @contextmanager
+    def _input_path(self, finfo: FileInfo) -> Iterator[Path]:
+        """把待解析文件定位成本机路径。
+
+        解析器（PyMuPDF、RapidOCR）只接受文件路径，所以对象存储要落一次临时文件，退出时
+        由上下文管理器删除；这个路径绝不能进数据库、日志或响应。
+        遗留的无租户任务没有对象键，只在 `path` 上继续可读（阶段 G4 退役）。
+        """
+        if finfo.storage_key:
+            with get_object_storage().local_path(finfo.storage_key) as path:
+                yield path
+            return
+        if finfo.path:
+            yield Path(finfo.path)
+            return
+        raise ParseError(f"{finfo.name}: 既没有对象键也没有本地路径")
+
     def run(self, job: Job) -> Job:
         job.status = JobStatus.PROCESSING
         job.result = []
@@ -44,7 +63,8 @@ class DocumentPipeline:
                 # --- 解析 ---
                 job.progress = Progress.PARSING
                 self._notify(job)
-                parse_result = self.dispatcher.parse(Path(finfo.path))
+                with self._input_path(finfo) as source_path:
+                    parse_result = self.dispatcher.parse(source_path)
 
                 # 回填 FileInfo
                 finfo.page_count = parse_result.pages

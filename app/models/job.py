@@ -32,7 +32,8 @@ class FileInfo:
   """单个输入文件的处理信息。"""
 
   name: str  # 原始文件名
-  path: str = ""  # 磁盘路径，供 pipeline 读取文件
+  storage_key: str = ""  # 对象存储相对键；处理链路据此读取文件
+  path: str = ""  # 仅限无租户的遗留进程内入口；不得写入对象存储快照
   page_count: int = 0
   chars: int = 0  # 参与提取的有效文本量
   ocr_applied: bool = False

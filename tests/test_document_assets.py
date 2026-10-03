@@ -8,7 +8,6 @@ import os
 import subprocess
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -22,6 +21,7 @@ from app.models.schema import INVOICE_TEMPLATE
 from app.services.document_storage import resolve_storage_path
 from app.services.job_repository import JobRepository
 from app.services.job_manager import get_job_manager
+from app.services.object_storage import LocalStorage, build_object_storage
 
 
 def test_document_version_rejects_cross_tenant_document(owner_workspace, other_workspace):
@@ -186,21 +186,57 @@ def test_storage_key_resolves_only_inside_storage_root(tmp_path):
             link.unlink()
 
 
-def test_upload_rejects_storage_key_that_does_not_resolve_to_written_file(
-    owner_workspace, sandbox, make_invoice_pdf, monkeypatch, tmp_path
+def test_uploaded_object_matches_the_persisted_storage_key(
+    owner_workspace, sandbox, make_invoice_pdf
 ):
-    from app.api import workspace_jobs
-
     pdf = make_invoice_pdf()
-    monkeypatch.setattr(
-        workspace_jobs,
-        "resolve_storage_path",
-        lambda _key, _root: tmp_path / "wrong.pdf",
+    tenant_id = owner_workspace["tenant_id"]
+    response = owner_workspace["client"].post(
+        f"/api/v1/tenants/{tenant_id}/jobs",
+        headers={"X-CSRF-Token": owner_workspace["csrf"]},
+        # 客户端文件名不参与寻址：穿越片段与真实内容都要落在存储根内。
+        files=[("files", ("../../evil invoice.pdf", pdf.read_bytes(), "application/pdf"))],
+        data={"fields": json.dumps(INVOICE_TEMPLATE)},
     )
+    assert response.status_code == 201, response.text
+    job_id = response.json()["job_id"]
+    with SessionLocal() as db:
+        version = db.query(DocumentVersion).filter_by(job_id=job_id).one()
+        record = db.get(PersistentJob, job_id)
+
+    assert version.original_filename == "evil invoice.pdf"
+    storage = build_object_storage()
+    assert storage.read_bytes(version.storage_key) == pdf.read_bytes()
+    target = resolve_storage_path(version.storage_key, sandbox)
+    assert target.is_file() and sandbox in target.parents
+    # 快照不再携带本机绝对路径，跨机器恢复任务只依赖相对对象键。
+    assert all(entry["path"] == "" for entry in record.snapshot["files"])
+
+
+def test_object_write_failure_rolls_back_already_written_objects(
+    owner_workspace, sandbox, make_invoice_pdf, monkeypatch
+):
+    first, second = make_invoice_pdf("01100200011100045239"), make_invoice_pdf(
+        "01100200011100045240"
+    )
+    original_put = LocalStorage.put
+    puts = 0
+
+    def fail_second_put(self, key, source, *, content_type=None):
+        nonlocal puts
+        puts += 1
+        if puts == 2:
+            raise OSError("simulated storage failure")
+        return original_put(self, key, source, content_type=content_type)
+
+    monkeypatch.setattr(LocalStorage, "put", fail_second_put)
     response = owner_workspace["client"].post(
         f"/api/v1/tenants/{owner_workspace['tenant_id']}/jobs",
         headers={"X-CSRF-Token": owner_workspace["csrf"]},
-        files=[("files", (pdf.name, pdf.read_bytes(), "application/pdf"))],
+        files=[
+            ("files", (first.name, first.read_bytes(), "application/pdf")),
+            ("files", (second.name, second.read_bytes(), "application/pdf")),
+        ],
         data={"fields": json.dumps(INVOICE_TEMPLATE)},
     )
     assert response.status_code == 500
@@ -232,42 +268,6 @@ def test_metadata_transaction_failure_cleans_files_and_memory_job(
     assert list((sandbox / owner_workspace["tenant_id"]).glob("*")) == []
     manager = get_job_manager()
     assert manager._jobs == {}
-    with SessionLocal() as db:
-        assert db.query(PersistentJob).count() == 0
-        assert db.query(Document).count() == 0
-        assert db.query(DocumentVersion).count() == 0
-
-
-def test_partial_file_write_failure_cleans_entire_upload_directory(
-    owner_workspace, sandbox, make_invoice_pdf, monkeypatch
-):
-    first, second = make_invoice_pdf("01100200011100045239"), make_invoice_pdf(
-        "01100200011100045240"
-    )
-    original_write_bytes = Path.write_bytes
-    upload_writes = 0
-
-    def fail_second_upload_write(path, content):
-        nonlocal upload_writes
-        if len(path.parent.name) == 32:
-            upload_writes += 1
-            if upload_writes == 2:
-                raise OSError("simulated disk failure")
-        return original_write_bytes(path, content)
-
-    monkeypatch.setattr(Path, "write_bytes", fail_second_upload_write)
-    response = owner_workspace["client"].post(
-        f"/api/v1/tenants/{owner_workspace['tenant_id']}/jobs",
-        headers={"X-CSRF-Token": owner_workspace["csrf"]},
-        files=[
-            ("files", (first.name, first.read_bytes(), "application/pdf")),
-            ("files", (second.name, second.read_bytes(), "application/pdf")),
-        ],
-        data={"fields": json.dumps(INVOICE_TEMPLATE)},
-    )
-    assert response.status_code == 500
-    assert list((sandbox / owner_workspace["tenant_id"]).glob("*")) == []
-    assert get_job_manager()._jobs == {}
     with SessionLocal() as db:
         assert db.query(PersistentJob).count() == 0
         assert db.query(Document).count() == 0

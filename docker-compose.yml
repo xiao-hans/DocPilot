@@ -46,6 +46,29 @@ services:
       retries: 12
       start_period: 25s
 
+  # 本机 S3 兼容模拟器（docs/17 §3）。MinIO 社区仓库已于 2026-04-25 归档，
+  # 因此开发依赖改用 SeaweedFS；它只用于本机验证 S3 接口兼容性，不构成生产选型。
+  object-store:
+    image: chrislusf/seaweedfs:4.22
+    container_name: docpilot-object-store
+    restart: unless-stopped
+    # 不指定 -logdir：glog 会因目录不存在反复退出，日志交给 stderr 由 Docker 收集。
+    # S3 对象目录由 `-dir` 派生（该版本没有 -smdir）。
+    # `-ip` 必须是可回连的地址，用 0.0.0.0 会让 master 客户端连到 0.0.0.0:9333 失败；
+    # 因此绑定所有网卡但自报 127.0.0.1（端口本身只发布到 127.0.0.1）。
+    command: server -s3 -dir=/data -ip=127.0.0.1 -ip.bind=0.0.0.0
+    ports:
+      - "127.0.0.1:8333:8333"
+    volumes:
+      - object-store-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8333/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
 volumes:
   postgres-data:
   rabbitmq-data:
+  object-store-data:

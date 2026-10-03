@@ -50,6 +50,7 @@ class JobRepository:
             "files": [
                 {
                     "name": f.name,
+                    "storage_key": f.storage_key,
                     "path": f.path,
                     "page_count": f.page_count,
                     "chars": f.chars,
