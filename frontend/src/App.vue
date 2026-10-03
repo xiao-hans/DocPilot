@@ -12,18 +12,24 @@ import ResultPreview from './components/ResultPreview.vue'
 import DownloadButton from './components/DownloadButton.vue'
 import ReviewPanel from './components/ReviewPanel.vue'
 import LibraryPanel from './components/LibraryPanel.vue'
+import TemplatesPanel from './components/TemplatesPanel.vue'
+import TeamPanel from './components/TeamPanel.vue'
+import AutomationPanel from './components/AutomationPanel.vue'
 import AuthGate from './components/AuthGate.vue'
 import { INVOICE_FIELDS, type FieldDefinition, type ResultRow } from './api/client'
 import { useJobPolling } from './composables/useJobPolling'
 
 type Scene = 'upload' | 'processing' | 'result'
-type View = 'process' | 'review' | 'library'
+type View = 'process' | 'review' | 'library' | 'templates' | 'team' | 'automation'
 
 const view = ref<View>('process')
 const VIEWS: { value: View; label: string }[] = [
   { value: 'process', label: '处理' },
   { value: 'review', label: '复核' },
   { value: 'library', label: '文档库' },
+  { value: 'templates', label: '模板' },
+  { value: 'team', label: '团队' },
+  { value: 'automation', label: '自动化' },
 ]
 const scene = ref<Scene>('upload')
 const jobId = ref('')
@@ -133,10 +139,13 @@ watch(
       </nav>
     </header>
 
-    <!-- 复核与文档库 -->
+    <!-- 复核、文档库与三个管理面 -->
     <main v-if="view !== 'process'" class="mx-auto w-full max-w-[1100px] px-4 py-10 sm:px-8">
       <ReviewPanel v-if="view === 'review'" :role="tenant.role" />
-      <LibraryPanel v-else :role="tenant.role" />
+      <LibraryPanel v-else-if="view === 'library'" :role="tenant.role" />
+      <TemplatesPanel v-else-if="view === 'templates'" :role="tenant.role" />
+      <TeamPanel v-else-if="view === 'team'" :role="tenant.role" />
+      <AutomationPanel v-else :role="tenant.role" />
     </main>
 
     <!-- 处理主流程 -->

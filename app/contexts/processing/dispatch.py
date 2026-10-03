@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.config import DISPATCH_REPUBLISH_SECONDS, JOB_LEASE_SECONDS, QUEUE_NAME
@@ -203,6 +203,31 @@ def close_open_for_job(db: Session, *, job_id: str, tenant_id: str) -> int:
         )
     )
     return int(result.rowcount or 0)
+
+
+def queue_backlog() -> dict[str, int | float | None]:
+    """待执行的派发意图数量与最老一条的等待秒数，供就绪判定使用。
+
+    只统计 `ready`（还没投出去）与 `published`（投了但没人领）：已 `claimed` 的行由
+    租约超时回收负责，把它们算进积压会让"有一个慢任务"看起来像队列故障。
+    `updated_at` 在 SQLite 下是 naive、PostgreSQL 下是 tz-aware，年龄必须统一按 UTC 算，
+    否则同一份代码在两种方言下会差出一个时区。
+    """
+    now = _now()
+    with SessionLocal() as db:
+        rows = db.execute(
+            select(
+                func.count(),
+                func.min(JobDispatch.updated_at),
+            ).where(JobDispatch.status.in_(("ready", "published")))
+        ).one()
+    count = int(rows[0] or 0)
+    oldest = rows[1]
+    if oldest is None:
+        return {"pending": count, "oldest_pending_seconds": None}
+    if oldest.tzinfo is None:
+        oldest = oldest.replace(tzinfo=timezone.utc)
+    return {"pending": count, "oldest_pending_seconds": max(0.0, (now - oldest).total_seconds())}
 
 
 def republish_stalled() -> list[str]:

@@ -9,7 +9,14 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.config import AI_MODEL, EXTRACTOR_MODE, JOB_ATTEMPT_TIMEOUT_SECONDS, JOB_MAX_ATTEMPTS
+from app.config import (
+    AI_MODEL,
+    EXTRACTOR_MODE,
+    JOB_ATTEMPT_TIMEOUT_SECONDS,
+    JOB_MAX_ATTEMPTS,
+    QUEUE_ENABLED,
+    QUEUE_NAME,
+)
 from app.contexts.processing import dispatch
 from app.contexts.processing.domain import JobAttempt
 from app.db import SessionLocal
@@ -33,6 +40,33 @@ def engine_name() -> str:
     if EXTRACTOR_MODE == "llm" and AI_MODEL:
         return f"llm:{AI_MODEL}"
     return EXTRACTOR_MODE
+
+
+def queue_health() -> dict[str, Any]:
+    """/readyz 的队列段：队列模式下"有没有人在消费"与"有多少活排着"。
+
+    口径刻意分开三种情况：
+    - 未启用队列（`BROKER_URL` 为空）：API 进程内执行，队列不参与就绪判定。
+    - 启用了但问不到 broker（`consumers is None`）：配置声称走队列却连状态都取不到，
+      这就是故障，无论有没有积压。
+    - 启用了、问到了消费者数：只有"确实有活排着而消费者为 0"才算卡住；没活时 0 个
+      消费者是正常状态，不该被读成服务不可用。
+    """
+    if not QUEUE_ENABLED:
+        return {"enabled": False, "reason": "queue_disabled"}
+    from app.contexts.processing import broker
+
+    backlog = dispatch.queue_backlog()
+    consumers = broker.consumer_count()
+    stuck = consumers is None or (backlog["pending"] > 0 and consumers == 0)
+    return {
+        "enabled": True,
+        "queue": QUEUE_NAME,
+        "consumers": consumers,
+        "pending": backlog["pending"],
+        "oldest_pending_seconds": backlog["oldest_pending_seconds"],
+        "stuck": stuck,
+    }
 
 
 def find_by_idempotency_key(db: Session, tenant_id: str, key: str) -> PersistentJob | None:

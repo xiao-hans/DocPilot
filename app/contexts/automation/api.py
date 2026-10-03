@@ -38,6 +38,22 @@ class RuleUpdate(BaseModel):
     status: str | None = None
 
 
+@router.get("/automation/meta")
+def rule_meta(context: TenantContext = Depends(require_roles(*ALL_ROLES))) -> dict[str, Any]:
+    """规则表单的可选值来自后端同一份白名单。
+
+    界面不复制这份清单，否则新增事件类型或收紧条件键时两边会静默漂移。
+    """
+    return {
+        "event_types": list(service.ALLOWED_EVENT_TYPES),
+        "action_types": list(service.ACTION_TYPES),
+        "condition_keys": {
+            event_type: sorted(keys) for event_type, keys in service.CONDITION_KEYS.items()
+        },
+        "max_condition_keys": service.MAX_CONDITION_KEYS,
+    }
+
+
 @router.get("/automation/rules")
 def list_rules(
     limit: int = Query(default=50, ge=1, le=100),

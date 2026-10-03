@@ -176,3 +176,71 @@ def test_platform_usage_audits_every_listed_tenant(
         f"/api/v1/tenants/{owner_workspace['tenant_id']}/audit-events"
     ).json()["events"]
     assert any(event["action"] == "platform.usage_viewed" for event in listed)
+
+# ---- 队列就绪判定（G5 / docs/17 G-DEC-09、风险 R-017）----
+
+
+def _queue_mode(monkeypatch, consumers, backlog):
+    from app.contexts.processing import broker, dispatch
+
+    monkeypatch.setattr("app.contexts.processing.service.QUEUE_ENABLED", True)
+    monkeypatch.setattr(broker, "consumer_count", lambda queue=None: consumers)
+    monkeypatch.setattr(dispatch, "queue_backlog", lambda: backlog)
+
+
+def test_readyz_is_unavailable_when_backlogged_queue_has_no_consumer(
+    owner_workspace: dict, monkeypatch
+) -> None:
+    """队列模式 + 有积压 + 没有消费者 = 任务会无限停在队列里，必须报不可用。"""
+    _queue_mode(monkeypatch, 0, {"pending": 2, "oldest_pending_seconds": 45.0})
+
+    response = TestClient(app).get("/readyz")
+    assert response.status_code == 503
+    queue = response.json()["queue"]
+    assert queue["enabled"] is True and queue["stuck"] is True
+    assert queue["consumers"] == 0 and queue["pending"] == 2
+    assert queue["oldest_pending_seconds"] == 45.0
+
+
+def test_readyz_allows_idle_queue_without_consumers(owner_workspace: dict, monkeypatch) -> None:
+    """没活干时 0 个消费者是正常缩容，不能被读成服务不可用。"""
+    _queue_mode(monkeypatch, 0, {"pending": 0, "oldest_pending_seconds": None})
+
+    response = TestClient(app).get("/readyz")
+    assert response.status_code == 200, response.text
+    queue = response.json()["queue"]
+    assert queue["enabled"] is True and queue["stuck"] is False
+    assert queue["consumers"] == 0 and queue["pending"] == 0
+    assert queue["oldest_pending_seconds"] is None
+
+
+def test_readyz_treats_unreachable_broker_as_failure(owner_workspace: dict, monkeypatch) -> None:
+    """"问不到消费者"与"问到 0 个"是两种故障：配置声称走队列却连状态都取不到。"""
+    _queue_mode(monkeypatch, None, {"pending": 0, "oldest_pending_seconds": None})
+
+    response = TestClient(app).get("/readyz")
+    assert response.status_code == 503
+    queue = response.json()["queue"]
+    assert queue["consumers"] is None and queue["stuck"] is True
+
+
+def test_readyz_keeps_queue_mode_out_of_the_judgement_when_disabled(
+    owner_workspace: dict,
+) -> None:
+    """未设置 BROKER_URL 时 API 进程内执行任务，队列状态不参与就绪判定。"""
+    body = TestClient(app).get("/readyz").json()
+    assert body["status"] == "ready"
+    assert body["queue"] == {"enabled": False, "reason": "queue_disabled"}
+
+
+def test_readiness_probe_failure_cannot_escalate_to_500() -> None:
+    """探针自己出问题时仍要给出 503 与分类原因，而不是把 /readyz 变成未捕获异常。"""
+    from app.contexts.operations import service as operations_service
+
+    def explode() -> dict:
+        raise RuntimeError("模拟探针故障")
+
+    code, body = operations_service.readiness(SessionLocal, "head", queue_probe=explode)
+    assert code == 503
+    assert body["queue"]["stuck"] is True
+    assert body["error"] == "queue_probe:RuntimeError"

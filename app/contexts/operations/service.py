@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -237,8 +238,16 @@ def platform_usage(
     }
 
 
-def readiness(session_factory, head_revision: str) -> tuple[int, dict[str, Any]]:
-    """就绪判定：数据库不可用或迁移未对齐都返回 503，但绝不抛异常。"""
+def readiness(
+    session_factory,
+    head_revision: str,
+    queue_probe: Callable[[], dict[str, Any]] | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """就绪判定：数据库不可用、迁移未对齐或队列卡住都返回 503，但绝不抛异常。
+
+    `queue_probe` 默认取处理上下文的队列状态；测试里换成假探针，才能把
+    "有积压没消费者"与"broker 问不到"两种故障分别钉住。
+    """
     database_ok = False
     current: str | None = None
     error: str | None = None
@@ -250,15 +259,27 @@ def readiness(session_factory, head_revision: str) -> tuple[int, dict[str, Any]]
     except SQLAlchemyError as exc:
         error = type(exc).__name__
     in_sync = database_ok and current == head_revision
-    status = "ready" if in_sync else "unavailable"
+    if queue_probe is None:
+        from app.contexts.processing import service as processing
+
+        queue_probe = processing.queue_health
+    try:
+        queue = queue_probe()
+    except Exception as exc:  # 探针自身不许把 /readyz 变成 500
+        queue = {"enabled": True, "consumers": None, "pending": None, "stuck": True}
+        error = error or f"queue_probe:{type(exc).__name__}"
+    queue_stuck = bool(queue.get("enabled") and queue.get("stuck"))
+    ready = in_sync and not queue_stuck
+    status = "ready" if ready else "unavailable"
     body = {
         "status": status,
         "database": database_ok,
         "migration": {"current": current, "head": head_revision, "in_sync": in_sync},
+        "queue": queue,
     }
     if error is not None:
         body["error"] = error
-    return (200 if status == "ready" else 503), body
+    return (200 if ready else 503), body
 
 
 def _alembic_version_column():

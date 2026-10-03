@@ -17,6 +17,7 @@ import pytest
 from sqlalchemy import select
 
 from app.config import BROKER_URL
+from app.contexts.processing import broker as broker_store
 from app.contexts.processing import dispatch as dispatch_store
 from app.contexts.processing import service as processing
 from app.contexts.processing.broker import AmqpTransport
@@ -193,3 +194,38 @@ def test_message_survives_connection_loss(
 
     status, attempts = _job_outcome(job_id)
     assert status == "succeeded" and attempts == ["succeeded"]
+
+
+def test_consumer_count_reads_the_real_queue(
+    owner_workspace: dict, sandbox: Path, make_invoice_pdf, queue_mode
+) -> None:
+    """就绪探针的口径必须由真实 broker 校验：问到几个消费者、队列不存在时返回 None。
+
+    `passive=True` 的语义也要钉住——探针绝不能顺手把队列建出来，否则"配置写错了队列名"
+    会被探针自己掩盖成一个空队列。
+    """
+    missing = f"docpilot.absent.{uuid.uuid4().hex[:8]}"
+    assert broker_store.consumer_count(missing) is None
+
+    # 与 _consume_until 相同的接线方式：连接在主线程建立、消费循环在工作线程跑。
+    # 让工作线程自己建连接会撞上 pika 在 Windows 上的 IO 服务竞态（G2 实测）。
+    _job_id, _payload = _submit(owner_workspace, make_invoice_pdf, sandbox)
+    transport = AmqpTransport(queue=queue_mode)
+    assert Dispatcher(transport).run_once()["published"] == 1
+    thread = threading.Thread(target=transport.consume, args=(handle,), daemon=True)
+    try:
+        thread.start()
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and broker_store.consumer_count(queue_mode) != 1:
+            time.sleep(0.2)
+        assert broker_store.consumer_count(queue_mode) == 1
+    finally:
+        transport.stop()
+        thread.join(10)
+        transport.close()
+
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline and broker_store.consumer_count(queue_mode) != 0:
+        time.sleep(0.2)
+    assert broker_store.consumer_count(queue_mode) == 0
+    assert broker_store.consumer_count(missing) is None  # 仍未被探针创建

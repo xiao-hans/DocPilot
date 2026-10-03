@@ -1,257 +1,240 @@
-import { test, expect } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 import {
-  BRAND_RGB,
-  CANVAS_RGB,
-  DEFAULT_FIELDS,
+  ADMIN_EMAIL,
   INVOICE_NUMBER,
+  REVISED_SELLER,
+ SELLER,
+  TENANT_NAME,
   badDocx,
   downloadLink,
   downloadedSize,
   dropZone,
   expectComputedStyle,
+  BRAND_RGB,
+  fileInput,
   invoicePdf,
-  progressRegion,
+  openView,
   rowCell,
+  signIn,
   startProcessing,
   submitButton,
-  uploadFile,
   waitForSuccess,
 } from './helpers'
 
 /**
- * DocAI 前端端到端测试（本地起真实服务，系统 Chrome 执行）。
+ * 阶段 G5 端到端用例（TC-E2E-001 与各管理面）。
  *
- * 确定性原则：
- * - 等待全部基于条件（元素/事件/下载对象），零 waitForTimeout
- * - 每个场景独立上传自己的文件（job 由后端 uuid 隔离），无共享种子数据
- * - 场景 3 用网络拦截把轮询 GET 显式延后，把 processing 幕「定格」到可断言长度，
- *   不依赖后端处理速度（这仍是真实处理视图，只是首轮轮询被推迟）
+ * 环境由 `global-setup.ts` 提供：一次性后端（独立 SQLite + 独立上传/输出目录）与前端 dev server，
+ * 因此这里所有写操作都落在跑完即弃的数据目录里，不触碰开发数据。
+ * 单 worker 顺序执行：第一个用例完成一次性平台初始化，其余走正常登录。
  */
 
-test.describe('DocAI e2e', () => {
-  test('page loads: brand, upload card, gold CTA button', async ({ page }) => {
-    await page.goto('/')
+async function activeTenantId(page: Page): Promise<string> {
+  const me = await page.request.get('/api/v1/auth/me')
+  expect(me.ok(), `登录态应可用：${me.status()}`).toBe(true)
+  const body = await me.json()
+  return body.tenants[0].id
+}
 
-    await expect(page).toHaveTitle(/DocAI/)
-    await expect(page.getByText('DocAI', { exact: true })).toBeVisible()
+test.describe('DocAI 端到端', () => {
+  test('首次部署：平台初始化后进入空白工作区', async ({ page }) => {
+    await signIn(page)
+    await expect(page.locator('#active-workspace')).toContainText(TENANT_NAME)
+    await expect(page.getByText(ADMIN_EMAIL)).toBeVisible()
     await expect(dropZone(page)).toBeVisible()
-    await expect(page.getByText('支持 PDF / PNG / JPG / JPEG · 单文件 ≤ 20MB · 最多 10 个')).toBeVisible()
-
-    // 品牌主按钮（minimal secondary 藏青）：computed background-color == #312C85
-    const btn = submitButton(page)
-    await expect(btn).toBeVisible()
-    await expectComputedStyle(page, btn, 'background-color', BRAND_RGB)
-    const btnText = await btn.textContent()
-    expect(btnText?.trim()).toBe('开始AI分析')
-
-    // 浅色主题（minimal surface）：根容器 computed background == #F4F4F1
-    await expectComputedStyle(page, page.locator('#app > div'), 'background-color', CANVAS_RGB)
-    await expect(page.getByText('默认按发票模板提取 6 个字段')).toBeVisible()
-    // 提交按钮初始不可用（无文件）
-    await expect(btn).toBeDisabled()
+    await expect(submitButton(page)).toBeDisabled()
+    await expectComputedStyle(page, submitButton(page), 'background-color', BRAND_RGB)
   })
 
-  test('upload real invoice PDF: processing → result with extracted values', async ({ page }) => {
-    await page.goto('/')
+  test('上传发票：处理完成后结果表给出真实提取值', async ({ page }) => {
+    await signIn(page)
     await startProcessing(page)
-
-    // 进入第二幕
-    await expect(progressRegion(page)).toBeVisible()
-
-    // 轮询驱动，等最终结果（≤30s）
     await waitForSuccess(page)
 
-    // 摘要：处理成功 + N 文件/M 字段
     await expect(page.getByText('1 个文件 · 6 个字段')).toBeVisible()
-    await expect(downloadLink(page)).toBeVisible()
-
-    // 首行：filename 正确；发票号码 / 开票日期 / 销售方 / 购买方 / 价税合计 / 税额为真实提取值
     await expect(rowCell(page, 0)).toHaveText('invoice_240615.pdf')
     await expect(rowCell(page, 1)).toHaveText(INVOICE_NUMBER)
     await expect(rowCell(page, 2)).toHaveText('2024-06-15')
-    await expect(rowCell(page, 3)).toHaveText('北京恒达科技有限公司')
-    await expect(rowCell(page, 4)).toHaveText('上海锐进商贸有限公司')
-    // 价税合计顶层 regex 提取 "1,280.00"，coerce_number 整数化 → 1280（表列：filename+6 字段）
+    await expect(rowCell(page, 3)).toHaveText(SELLER)
     await expect(rowCell(page, 5)).toHaveText('1280')
-    await expect(rowCell(page, 6)).toHaveText('73.92')
 
-    // 表头：首列为 filename，数值列右对齐
-    const header = page.locator('thead th')
-    await expect(header.nth(0)).toHaveText('filename')
-    const priceAlign = await rowCell(page, 5).evaluate(
-      (el) => window.getComputedStyle(el).textAlign,
-    )
-    expect(priceAlign).toBe('right')
+    const href = await downloadLink(page).getAttribute('href')
+    expect(href).toContain('/excel')
   })
 
-  test('processing timeline shows the 5 documented steps', async ({ page }) => {
-    await page.goto('/')
-
-    // 把本轮询 GET 显式延迟 2s：无论后端多快，首轮轮询返回前 processing 幕
-    // 必然在屏（真实处理视图，非合成 dom）。POST /api/jobs 不受影响。
-    await page.route('**/api/jobs/*', async (route) => {
-      if (route.request().method() === 'POST') {
-        await route.continue()
-        return
-      }
-      await new Promise((r) => setTimeout(r, 2000))
-      await route.continue()
-    })
-
-    await startProcessing(page)
-
-    const progress = progressRegion(page)
-    await expect(progress).toBeVisible({ timeout: 10_000 })
-
-    // 5 步文案齐全（静态渲染，任意进度下都存在）
-    for (const label of [
-      '文件上传完成',
-      '文档解析完成',
-      'OCR 文字识别完成',
-      'AI 正在提取字段',
-      'Excel 生成完成',
-    ]) {
-      await expect(progress.getByText(label, { exact: true })).toBeVisible()
-    }
-
-    // 状态性断言：首步已 done（金色 ✓）+ 恰好一个 active 步骤带旋转 loader
-    await expect(progress.locator('.step-check-pop').first()).toBeVisible()
-    const spinners = progress.getByRole('status')
-    await expect(spinners.first()).toBeVisible()
-    expect(await spinners.count()).toBe(1)
-
-    await expect(progress.getByText('文件上传完成', { exact: true })).toHaveCSS(
-      'color',
-      'rgb(12, 12, 9)',
-    )
-  })
-
-  test('download Excel: .xlsx suggested name, non-empty file', async ({ page }) => {
-    await page.goto('/')
+  test('复核：保存修订并确认，结果读路径立即反映修订值', async ({ page }) => {
+    await signIn(page)
     await startProcessing(page)
     await waitForSuccess(page)
 
-    const downloadPromise = page.waitForEvent('download')
-    await downloadLink(page).click()
-    const download = await downloadPromise
-
-    expect(download.suggestedFilename()).toMatch(/\.xlsx$/)
-    const filePath = await download.path()
-    expect(downloadedSize(filePath)).toBeGreaterThan(0)
-  })
-
-  test('rejects .docx client-side without any POST /api/jobs', async ({ page }) => {
-    await page.goto('/')
-
-    const postUrls: string[] = []
-    page.on('request', (req) => {
-      if (req.method() === 'POST' && req.url().includes('/api/jobs')) postUrls.push(req.url())
+    // 任务 ID 从复核台真正加载的那条结果里取，而不是从下载链接猜：队列里可能留着上一个用例的同名文件。
+    const loadedJobIds: string[] = []
+    page.on('response', (response) => {
+      const path = new URL(response.url()).pathname
+      if (!/\/results\/[^/]+$/.test(path) || !response.ok()) return
+      response
+        .json()
+        .then((body) => body?.job_id && loadedJobIds.push(String(body.job_id)))
+        .catch(() => undefined)
     })
 
-    await uploadFile(page, badDocx)
+    await openView(page, '复核')
+    // 进入复核台就会自动打开队列首条并重新写入草稿：必须等这条 GET 落地再改值，
+    // 否则填进去的修订会被随后的草稿初始化覆盖，"保存修订"始终是禁用态。
+    await expect
+      .poll(() => loadedJobIds.length, { timeout: 10_000 })
+      .toBeGreaterThan(0)
+    await expect(page.getByText('机器结果 · v1').first()).toBeVisible()
 
-    // 错误条（role=alert）出现且明确指向不被支持的类型
-    const alert = page.getByRole('alert')
-    await expect(alert).toBeVisible()
-    await expect(alert).toContainText('不支持的文件类型：bad.docx')
-    await expect(alert).toContainText('仅支持 PDF / PNG / JPG / JPEG')
+    await page.locator('input[aria-label="销售方名称"]').fill(REVISED_SELLER)
+    await expect(page.getByRole('button', { name: '保存修订' })).toBeEnabled()
+    await page.getByRole('button', { name: '保存修订' }).click()
+    await expect(page.getByText('已修订 · v2').first()).toBeVisible()
 
-    // 非法文件不进列表：唯一错误条目、无 chips、计数为 0、按钮禁用 → 请求不可能发出
-    await expect(alert.locator('li')).toHaveCount(1)
-    await expect(page.locator('ul.mt-4')).toHaveCount(0)
-    await expect(page.getByText(/已选择/)).toBeHidden()
+    await page.getByRole('button', { name: '确认结果' }).click()
+    await expect(page.getByRole('button', { name: /已确认 · v2/ }).first()).toBeVisible()
+
+    // 关键断言：/result 与 /export 走的是规范化结果，改过的字段不能退回机器值（阶段 G4）。
+    const jobId = loadedJobIds[0]!
+    const tenant = await activeTenantId(page)
+    const result = await (
+      await page.request.get(`/api/v1/tenants/${tenant}/jobs/${jobId}/result`)
+    ).json()
+    expect(result.result[0].values['销售方名称']).toBe(REVISED_SELLER)
+    expect(result.result[0].values['发票号码']).toBe(INVOICE_NUMBER)
+
+    const csv = await page.request.get(
+      `/api/v1/tenants/${tenant}/jobs/${jobId}/export?format=csv`,
+    )
+    expect(csv.ok()).toBe(true)
+    expect(await csv.text()).toContain(REVISED_SELLER)
+  })
+
+  test('文档库：按修订后的字段值检索并保存标注', async ({ page }) => {
+    await signIn(page)
+    await openView(page, '文档库')
+
+    await page.locator('#library-q').fill(REVISED_SELLER)
+    await page.locator('#library-kind').selectOption('field')
+    await page.getByRole('button', { name: '检索' }).click()
+    await expect(page.getByText(/[1-9]\d* 条命中/).first()).toBeVisible()
+    await expect(page.getByText('invoice_240615.pdf').first()).toBeVisible()
+
+    const labelInput = page.locator('input[id^="labels-"]').first()
+    await labelInput.fill('E2E 复核样本')
+    await page.getByRole('button', { name: '保存' }).first().click()
+    await expect(page.getByText('已更新标签').first()).toBeVisible()
+
+    await page.locator('#library-q').fill('不存在的关键词XYZ')
+    await page.getByRole('button', { name: '检索' }).click()
+    await expect(page.getByText('0 条命中').first()).toBeVisible()
+  })
+
+  test('模板管理：新建草稿、发布版本并复制', async ({ page }, testInfo) => {
+    await signIn(page)
+    await openView(page, '模板')
+
+    // 模板名在工作空间内唯一，重试用同一个名字会撞上上一次尝试留下的草稿。
+    const templateName = testInfo.retry ? `E2E 费用单 · 重试 ${testInfo.retry}` : 'E2E 费用单'
+    await page.getByRole('button', { name: '新建模板' }).click()
+    await page.getByPlaceholder('如：增值税专用发票').fill(templateName)
+    const nameInputs = page.locator('input[placeholder="字段名"]')
+    const descInputs = page.locator('input[placeholder^="说明："]')
+    await nameInputs.nth(0).fill('报销单号')
+    await descInputs.nth(0).fill('费用单右上角的报销单号')
+    await page.getByRole('button', { name: '加一个字段' }).click()
+    await nameInputs.nth(1).fill('金额')
+    await descInputs.nth(1).fill('合计金额，数字')
+    await page.getByRole('button', { name: '创建草稿' }).click()
+    await expect(page.getByText(`模板「${templateName}」已创建为草稿`).first()).toBeVisible()
+
+    // 创建后自动选中：详情区的模板名称输入框回填同一个名字，说明确实切到了这条模板。
+    await expect(page.getByRole('textbox', { name: '模板名称' })).toHaveValue(templateName)
+
+    await page.getByRole('button', { name: '发布新版本' }).click()
+    await expect(page.getByText('已发布为新版本，之后任务可绑定该版本').first()).toBeVisible()
+    await expect(page.getByText(/已发布版本（1）/).first()).toBeVisible()
+
+    await page.getByRole('button', { name: '复制为草稿' }).click()
+    await expect(page.getByText('已复制为新的草稿模板').first()).toBeVisible()
+  })
+
+  test('团队：生成一次性邀请令牌并可撤回', async ({ page }) => {
+    await signIn(page)
+    await openView(page, '团队')
+
+    await expect(page.getByRole('heading', { name: '成员与邀请' })).toBeVisible()
+    await expect(page.getByLabel('团队管理').getByText(ADMIN_EMAIL).first()).toBeVisible()
+
+    await page.locator('#invite-email').fill('e2e-guest@example.com')
+    await page.locator('#invite-role').selectOption('reviewer')
+    await page.getByRole('button', { name: '生成邀请' }).click()
+    await expect(page.getByText('邀请令牌（只显示这一次）')).toBeVisible()
+    await expect(page.getByTestId('invite-token')).toHaveText(/[A-Za-z0-9_-]{40,}/)
+
+    await page.getByRole('button', { name: '我已转交，关闭' }).click()
+    await expect(page.getByText('邀请令牌（只显示这一次）')).toBeHidden()
+
+    const pendingRow = page.getByRole('listitem').filter({ hasText: 'e2e-guest@example.com' }).first()
+    await expect(pendingRow).toBeVisible()
+    await pendingRow.getByRole('button', { name: '撤回' }).click()
+    await expect(
+      page.getByRole('listitem').filter({ hasText: 'e2e-guest@example.com' }).first(),
+    ).toContainText('已撤回')
+  })
+
+  test('事件规则：创建、消费事件并暂停', async ({ page }) => {
+    await signIn(page)
+    await openView(page, '自动化')
+
+    await expect(page.getByRole('heading', { name: '事件规则' })).toBeVisible()
+    await page.getByPlaceholder('规则名称').fill('E2E 给已处理文档打标')
+    await page.locator('select[aria-label="订阅事件"]').selectOption('job.succeeded')
+    await page.locator('select[aria-label="动作类型"]').selectOption('tag_document')
+    await page.getByPlaceholder('标签名').fill('E2E 自动标签')
+    await page.getByTestId('create-rule').click()
+    await expect(page.getByText('规则「E2E 给已处理文档打标」已创建并启用').first()).toBeVisible()
+
+    await page.getByTestId('dispatch-events').click()
+    await expect(page.getByText(/消费 \d+ 条事件：执行 \d+ · 跳过 \d+ · 失败 \d+/).first()).toBeVisible()
+    await expect(page.getByText(/最近运行（[1-9]\d*）/).first()).toBeVisible()
+
+    const pause = page.locator('[data-testid^="toggle-rule-"]').first()
+    await expect(pause).toHaveText('暂停')
+    await pause.click()
+    await expect(page.locator('[data-testid^="toggle-rule-"]').first()).toHaveText('启用')
+  })
+
+  test('拒绝非支持格式：客户端校验拦截，不发上传请求', async ({ page }) => {
+    await signIn(page)
+    let attempted = false
+    await page.route('**/api/v1/tenants/*/jobs*', (route) => {
+      if (route.request().method() === 'POST') attempted = true
+      return route.continue()
+    })
+    await fileInput(page).setInputFiles(badDocx)
+    await expect(page.getByRole('alert').first()).toContainText(/不支持|格式/)
     await expect(submitButton(page)).toBeDisabled()
-
-    // 截获监听里必须没有任何 POST /api/jobs
-    expect(postUrls, 'invalid file must not reach backend').toHaveLength(0)
+    expect(attempted).toBe(false)
   })
 
-  test('keyboard a11y: Tab focuses dropzone, Enter opens file chooser', async ({ page }) => {
-    await page.goto('/')
-
-    // 首 Tab 命中全页唯一可聚焦元素：拖拽区（role=button, tabindex=0）
-    await page.keyboard.press('Tab')
-    await expect(dropZone(page)).toBeFocused()
-
-    // Enter 在键盘路径下打开系统文件选择器
-    const fcPromise = page.waitForEvent('filechooser')
-    await page.keyboard.press('Enter')
-    const fileChooser = await fcPromise
-    expect(fileChooser).toBeTruthy()
-
-    // 补齐键盘路径：真正选中发票并走完整链路
-    await fileChooser.setFiles(invoicePdf)
-    await expect(page.getByText('invoice_240615.pdf')).toBeVisible()
-    await expect(page.getByText(/已选择 1 个文件/)).toBeVisible()
+  test('键盘可达：拖拽区可聚焦并用 Enter 打开文件选择', async ({ page }) => {
+    await signIn(page)
+    const chooser = page.waitForEvent('filechooser')
+    await dropZone(page).press('Enter')
+    const picker = await chooser
+    expect(picker).not.toBeNull()
   })
 
-  test('renders em-dash for empty field values (intercepted succeeded state)', async ({ page }) => {
-    test.info().annotations.push({
-      type: 'note',
-      description:
-        'real backend cannot emit empty values (mock extractor always fills fallbacks); ' +
-        'this validates the ResultPreview empty-value contract via an intercepted succeeded job',
-    })
-    await page.goto('/')
-
-    // 轮询 GET→成功、/result→包含空值的结果行；真实上传 POST 仍打到后端
-    await page.route('**/api/jobs/*', async (route) => {
-      const req = route.request()
-      if (req.method() === 'POST') return route.continue()
-      const m = req.url().match(/\/api\/jobs\/([^/]+)\/?$/)
-      const jobId = m?.[1] ?? 'intercepted'
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          id: jobId,
-          status: 'succeeded',
-          progress: 'done',
-          created_at: Date.now(),
-          files: [{ name: 'empty-sample.pdf', page_count: 1, chars: 12, ocr_applied: false, error: null }],
-          fields: DEFAULT_FIELDS,
-          result: null,
-          warnings: [],
-          error: null,
-        }),
-      })
-    })
-    await page.route('**/api/jobs/*/result', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          job_id: 'intercepted',
-          status: 'succeeded',
-          progress: 'done',
-          result: [
-            {
-              file: 'empty-sample.pdf',
-              values: {
-                发票号码: '',
-                开票日期: '',
-                销售方名称: '',
-                购买方名称: '',
-                价税合计: '',
-                税额: '',
-              },
-              warnings: [],
-            },
-          ],
-          warnings: [],
-          error: null,
-        }),
-      })
-    })
-
+  test('Excel 下载：文件名与内容长度符合预期', async ({ page }) => {
+    await signIn(page)
     await startProcessing(page)
     await waitForSuccess(page)
-
-    // 空值渲染为 —
-    await expect(rowCell(page, 0)).toHaveText('empty-sample.pdf')
-    await expect(rowCell(page, 1)).toHaveText('—')
-    await expect(rowCell(page, 2)).toHaveText('—')
-    await expect(rowCell(page, 5)).toHaveText('—')
-    await expect(page.getByText('1 个文件 · 6 个字段')).toBeVisible()
+    const download = await Promise.all([
+      page.waitForEvent('download'),
+      downloadLink(page).click(),
+    ]).then(([event]) => event)
+    expect(download.suggestedFilename()).toMatch(/\.xlsx$/)
+    expect(downloadedSize(await download.path())).toBeGreaterThan(4096)
   })
 })

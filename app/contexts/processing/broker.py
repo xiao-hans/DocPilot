@@ -109,3 +109,32 @@ class AmqpTransport:
                 pass
         self._channel = None
         self._connection = None
+
+
+def consumer_count(queue: str | None = None) -> int | None:
+    """查询队列当前的活跃消费者数量。
+
+    返回 `None` 表示"问不到"（broker 不可达、凭据不对或队列还不存在）。就绪判定必须把
+    "没有消费者"和"无法确认有没有消费者"分开：前者可能是正常缩容，后者一定是配置或
+    依赖故障。
+    """
+    if not BROKER_URL:
+        return None
+    name = queue or QUEUE_NAME
+    try:
+        connection = pika.BlockingConnection(pika.URLParameters(BROKER_URL))
+    except pika.exceptions.AMQPError:
+        return None
+    try:
+        # passive=True 只查询不创建：队列不存在时抛错，而不是探针顺手建出一个队列。
+        declared = connection.channel().queue_declare(queue=name, passive=True)
+        # pika 1.3 的 BlockingChannel 返回 Method 包装，计数字段在 `.method` 上。
+        return int(declared.method.consumer_count)
+    except pika.exceptions.ChannelClosedByBroker:
+        return None  # 队列不存在（404）
+    finally:
+        try:
+            if connection.is_open:
+                connection.close()
+        except pika.exceptions.AMQPError:
+            pass
