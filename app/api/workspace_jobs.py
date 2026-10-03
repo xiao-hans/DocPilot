@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil  # noqa: E401  (失败清理使用)
 import uuid
 from datetime import datetime, timezone
@@ -27,7 +28,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import TenantContext, require_csrf, require_roles
-from app.config import MAX_FILES_PER_JOB, MAX_UPLOAD_MB, OUTPUT_DIR, UPLOAD_DIR
+from app.config import MAX_FILES_PER_JOB, MAX_UPLOAD_MB, OUTPUT_DIR, QUEUE_ENABLED, UPLOAD_DIR
 from app.contexts.processing import service as processing
 from app.contexts.templates import service as templates
 from app.db import get_db
@@ -207,6 +208,10 @@ async def create_job(
             events=events,
         )
     except (OSError, SQLAlchemyError, ValueError, RuntimeError) as exc:
+        # 对外只给通用文案，但服务端必须留下真实原因，否则 500 无法定位。
+        logging.getLogger("docpilot.upload").exception(
+            "任务保存失败 tenant_id=%s job_id=%s", tenant_id, job.id
+        )
         shutil.rmtree(upload_dir, ignore_errors=True)
         manager.discard_unpersisted(job.id)
         if key:
@@ -216,7 +221,10 @@ async def create_job(
                 return _reused(raced)
         raise HTTPException(status_code=500, detail="文件或任务元数据保存失败") from exc
 
-    background_tasks.add_task(manager.process, job.id)
+    if not QUEUE_ENABLED:
+        # 队列未启用时才由 API 进程内执行；启用后执行权交给 Worker 的租约领取，
+        # 否则同一任务会被两个执行者争抢。
+        background_tasks.add_task(manager.process, job.id)
     return {"job_id": job.id, "status": "queued", "reused": False}
 
 

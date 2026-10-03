@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import auth, members, routes, tenants, workspace_jobs
-from app.config import APP_ENV, BASE_DIR, DATABASE_URL, UPLOAD_DIR
+from app.config import APP_ENV, BASE_DIR, DATABASE_URL, QUEUE_ENABLED, UPLOAD_DIR
 from app.contexts.automation import api as automation_api
 from app.contexts.documents import api as documents_api
 from app.contexts.operations import api as operations_api
@@ -35,8 +35,10 @@ async def lifespan(app: FastAPI):
     manager = get_job_manager()
     with SessionLocal() as db:
         processing.reclaim_timeouts(db)
-    for job_id in manager.pending_job_ids():
-        asyncio.create_task(asyncio.to_thread(manager.process, job_id))
+    if not QUEUE_ENABLED:
+        # 队列模式下重启待办由派发器与 Worker 接管，API 不再进程内执行。
+        for job_id in manager.pending_job_ids():
+            asyncio.create_task(asyncio.to_thread(manager.process, job_id))
     yield
 
 

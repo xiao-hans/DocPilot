@@ -12,6 +12,7 @@ from app.db import SessionLocal
 from app.models.access import AuditEvent
 from app.models.document import Document, DocumentVersion
 from app.services import outbox
+from app.contexts.processing import dispatch
 from app.models.job import FileInfo, Job, JobStatus, Progress
 from app.models.persistent_job import PersistentJob
 from app.models.schema import FieldDefinition
@@ -125,6 +126,11 @@ class JobRepository:
             db.add_all(documents)
             db.add_all(versions)
             db.add_all(audit_events)
+            if job.status is JobStatus.QUEUED:
+                # 任务与派发意图必须同事务落库：只有事务提交后，派发器才能看见这个任务。
+                dispatch.create_pending(
+                    db, tenant_id=tenant_id, job_id=job.id, attempt_no=job.attempt_count + 1
+                )
             for spec in events:
                 outbox.record(db, **spec)
             db.commit()

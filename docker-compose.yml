@@ -26,5 +26,26 @@ services:
       retries: 20
       start_period: 10s
 
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    container_name: docpilot-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?缺少 RABBITMQ_USER，请参考 .env.example}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?缺少 RABBITMQ_PASSWORD，请参考 .env.example}
+    ports:
+      - "127.0.0.1:5672:5672"
+      # 管理端点只用于本机排查队列积压，不向局域网开放（docs/17 §7）。
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 25s
+
 volumes:
   postgres-data:
+  rabbitmq-data:

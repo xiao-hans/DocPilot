@@ -10,6 +10,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.config import AI_MODEL, EXTRACTOR_MODE, JOB_ATTEMPT_TIMEOUT_SECONDS, JOB_MAX_ATTEMPTS
+from app.contexts.processing import dispatch
 from app.contexts.processing.domain import JobAttempt
 from app.db import SessionLocal
 from app.models.persistent_job import PersistentJob
@@ -85,6 +86,10 @@ def requeue(db: Session, job_id: str, tenant_id: str) -> int:
         aggregate_id=job_id,
         payload={"status": "queued", "reason": "retry"},
     )
+    # 退回 queued 意味着需要再一次执行尝试：同事务登记派发意图，派发器只认这张表。
+    dispatch.create_pending(
+        db, tenant_id=tenant_id, job_id=job_id, attempt_no=job.attempt_count + 1
+    )
     db.commit()
     return job.attempt_count
 
@@ -121,13 +126,19 @@ def finish_attempt(
     job_status: str,
     error: str | None = None,
     parse_modes: list[str] | None = None,
-) -> None:
+    lease: "dispatch.Lease | None" = None,
+) -> bool:
     """同一事务内收口尝试、推进任务状态列并追加终态事件。
 
     状态列与尝试必须原子推进，否则崩溃会留下 processing 却已结束尝试的死态。
+    带租约时先证明租约仍属于当前执行者：已被接管的旧 Worker 不允许写结果，
+    否则它会覆盖新尝试。返回 False 表示本次写入因租约失效而被放弃。
     """
     now = _now()
     with SessionLocal() as db:
+        if lease is not None and not dispatch.settle(db, lease.dispatch_id, lease.token):
+            db.rollback()
+            return False
         stored = db.get(JobAttempt, attempt.id)
         if stored is not None and stored.status == "running":
             stored.status = status
@@ -159,7 +170,13 @@ def finish_attempt(
                 "engine": attempt.engine,
             },
         )
+        if job_status in TERMINAL_STATUSES:
+            # 任务已有结局，任何仍未了结的派发行都必须关闭，否则终态任务会被再次叫醒。
+            dispatch.close_open_for_job(
+                db, job_id=attempt.job_id, tenant_id=attempt.tenant_id
+            )
         db.commit()
+    return True
 
 
 def reclaim_timeouts(db: Session) -> dict[str, list[str]]:
@@ -201,6 +218,11 @@ def reclaim_timeouts(db: Session) -> dict[str, list[str]]:
         if job.attempt_count < JOB_MAX_ATTEMPTS:
             _transition(db, job, "queued", finished_at=None)
             outcome["requeued"].append(job.id)
+            # 超时回收后要重新派发；旧attempt 的租约行随之关闭，新尝试用新的派发行。
+            dispatch.close_open_for_job(db, job_id=job.id, tenant_id=job.tenant_id)
+            dispatch.create_pending(
+                db, tenant_id=job.tenant_id, job_id=job.id, attempt_no=job.attempt_count + 1
+            )
             outbox.record(
                 db,
                 tenant_id=job.tenant_id,
@@ -218,6 +240,7 @@ def reclaim_timeouts(db: Session) -> dict[str, list[str]]:
             job.snapshot = snapshot
             _transition(db, job, "failed")
             outcome["failed"].append(job.id)
+            dispatch.close_open_for_job(db, job_id=job.id, tenant_id=job.tenant_id)
             outbox.record(
                 db,
                 tenant_id=job.tenant_id,

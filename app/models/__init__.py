@@ -5,4 +5,4 @@ from app.contexts.processing import domain as processing_domain  # noqa: F401
 from app.contexts.review import domain as review_domain  # noqa: F401
 from app.contexts.search import domain as search_domain  # noqa: F401
 from app.contexts.templates import domain as templates_domain  # noqa: F401
-from app.models import access, account, document, outbox, persistent_job  # noqa: F401
+from app.models import access, account, dispatch, document, outbox, persistent_job  # noqa: F401

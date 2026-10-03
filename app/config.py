@@ -59,6 +59,21 @@ JOB_ATTEMPT_TIMEOUT_SECONDS = min(
     max(_env_int("JOB_ATTEMPT_TIMEOUT_SECONDS", 600), 30), 3600
 )
 
+# ---- 队列派发与执行租约：DOC-DD-008 §4（阶段 G2）----
+# BROKER_URL 为空表示不启用队列：任务仍由 API 进程内执行，派发行只作为权威记录。
+BROKER_URL = os.getenv("BROKER_URL", "").strip()
+QUEUE_ENABLED = bool(BROKER_URL)
+QUEUE_NAME = os.getenv("QUEUE_NAME", "docpilot.processing").strip() or "docpilot.processing"
+# Worker 一次最多握有的未 ack 消息数；本地默认远低于 100 并发目标（docs/17 §4.2）。
+WORKER_PREFETCH = min(max(_env_int("WORKER_PREFETCH", 4), 1), 100)
+# 执行租约时长：到期未续租即视为 Worker 已失联，可由恢复器回收。
+JOB_LEASE_SECONDS = min(max(_env_int("JOB_LEASE_SECONDS", 120), 10), 3600)
+# 派发器每轮领取的 ready 记录数与空闲轮询间隔。
+DISPATCH_BATCH_SIZE = min(max(_env_int("DISPATCH_BATCH_SIZE", 20), 1), 200)
+DISPATCH_POLL_SECONDS = min(max(_env_int("DISPATCH_POLL_SECONDS", 2), 1), 60)
+# 已发布但迟迟没人执行（消息丢失、broker 数据卷损毁）的派发行，超过该窗口退回 ready 重投。
+DISPATCH_REPUBLISH_SECONDS = min(max(_env_int("DISPATCH_REPUBLISH_SECONDS", 300), 60), 86400)
+
 # ---- 上传限额 ----
 MAX_UPLOAD_MB = _env_int("MAX_UPLOAD_MB", 20)
 MAX_FILES_PER_JOB = _env_int("MAX_FILES_PER_JOB", 10)

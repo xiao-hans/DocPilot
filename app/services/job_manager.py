@@ -6,6 +6,7 @@ import threading
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from app.contexts.processing import dispatch
 from app.contexts.processing import service as processing
 from app.models.job import FileInfo, Job, JobStatus, Progress
 from app.models.access import AuditEvent
@@ -181,12 +182,15 @@ class JobManager:
             self._jobs[job_id] = persisted
         return persisted
 
-    def process(self, job_id: str) -> Job:
+    def process(self, job_id: str, *, lease: "dispatch.Lease | None" = None) -> Job:
         """执行一次任务：先占用状态，再记录尝试，最后写回快照。
 
         设计权衡：pipeline.run 可能耗时（OCR/解析秒级），故锁内只做门闩检查，
         执行放在锁外；跨进程的正确性由 ProcessingJob 状态条件更新保证
         （DOC-DD-004 §5），内存门闩只是同进程的快速路径。
+
+        Worker 会带上执行租约：租约被接管后，本次结果不再写入，避免旧执行者
+        覆盖新尝试（docs/17 §4.2）。
         """
         job = self.load_for_processing(job_id)
         with self._lock:
@@ -210,6 +214,7 @@ class JobManager:
                     status="failed",
                     job_status=JobStatus.FAILED.value,
                     error=str(exc)[:500],
+                    lease=lease,
                 )
                 raise
             processing.finish_attempt(
@@ -218,6 +223,7 @@ class JobManager:
                 job_status=result.status.value,
                 error=result.error,
                 parse_modes=["ocr" if finfo.ocr_applied else "text" for finfo in result.files],
+                lease=lease,
             )
             return result
         finally:
