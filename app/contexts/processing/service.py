@@ -15,6 +15,7 @@ from app.contexts.processing.domain import JobAttempt
 from app.db import SessionLocal
 from app.models.persistent_job import PersistentJob
 from app.services import outbox
+from app.services.timestamps import iso_utc
 
 TERMINAL_STATUSES = ("succeeded", "partial", "failed")
 RETRYABLE_STATUSES = ("partial", "failed")
@@ -282,8 +283,8 @@ def attempts_payload(db: Session, job_id: str, tenant_id: str) -> list[dict[str,
             "status": attempt.status,
             "engine": attempt.engine,
             "parse_modes": attempt.parse_modes,
-            "started_at": _as_utc(attempt.started_at).isoformat(),
-            "finished_at": _as_utc(attempt.finished_at).isoformat() if attempt.finished_at else None,
+            "started_at": iso_utc(attempt.started_at),
+            "finished_at": iso_utc(attempt.finished_at),
             "error": attempt.error,
         }
         for attempt in rows

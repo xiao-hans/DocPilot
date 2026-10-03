@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.contexts.search import repository
 from app.contexts.search.domain import DEFAULT_FIELD_NAME, SEARCH_KINDS, SearchEntry
 from app.errors import AccessError
+from app.services.text_safety import without_nul
 
 MIN_QUERY_CHARS = 2
 MAX_QUERY_CHARS = 60
@@ -65,7 +66,7 @@ def reindex_version(
     for (kind, field_name), content in wanted.items():
         # PostgreSQL 的 text 与 json 都拒绝 NUL 字节，而 SQLite 照收；索引内容必须在入库前清掉，
         # 否则一条脏文本会让整批写入回滚。
-        content = content.replace("\x00", "")
+        content = without_nul(content)
         entry = existing.get((kind, field_name))
         if entry is None:
             db.add(

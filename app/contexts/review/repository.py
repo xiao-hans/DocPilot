@@ -9,6 +9,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.contexts.review.domain import DocumentText, ExtractionResult, ResultRevision
+from app.services.text_safety import without_nul
 
 CONFIRMABLE = ("machine", "revised")
 REJECTABLE = ("machine", "revised", "confirmed")
@@ -91,6 +92,9 @@ def upsert_text(
     text: str,
     extracted_at: datetime,
 ) -> DocumentText:
+    # 解析器/OCR 原文是 NUL 的最大来源，清洗必须早于 char_count：
+    # 记录下来的字符数要与实际存储的内容一致。
+    text = without_nul(text)
     existing = get_text(db, tenant_id, document_version_id)
     if existing is not None:
         existing.text = text

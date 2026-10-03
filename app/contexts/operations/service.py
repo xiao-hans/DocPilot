@@ -36,13 +36,24 @@ def _clean_window(days: int) -> int:
 
 
 def _grouped(db: Session, value, where: list) -> dict[Any, int]:
-    rows = db.execute(select(value, func.count()).where(*where).group_by(value)).all()
+    # 显式排序：SQLite 实际按插入顺序返回，PostgreSQL 不保证任何顺序，而这里的 dict
+    # 会原样变成响应里的 JSON 键序。`IS NULL` 排在前面是为了让两种方言对 NULL 键的
+    # 默认差异（SQLite ASC 置前、PG 置后）不影响最终顺序。
+    rows = db.execute(
+        select(value, func.count())
+        .where(*where)
+        .group_by(value)
+        .order_by(value.is_(None), value)
+    ).all()
     return {row[0]: int(row[1]) for row in rows}
 
 
 def _by_tenant(db: Session, value, key, where: list) -> dict[str, dict[Any, int]]:
     rows = db.execute(
-        select(key, value, func.count()).where(*where).group_by(key, value)
+        select(key, value, func.count())
+        .where(*where)
+        .group_by(key, value)
+        .order_by(key, value.is_(None), value)
     ).all()
     grouped: dict[str, dict[Any, int]] = {}
     for tenant_id, bucket, count in rows:

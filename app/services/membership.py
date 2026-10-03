@@ -20,6 +20,7 @@ from app.errors import AccessError
 from app.models.access import INVITABLE_ROLES, Invitation
 from app.models.account import Membership, Tenant, User
 from app.security import token_hash
+from app.services.timestamps import iso_utc
 from app.services import audit
 
 INVALID_INVITATION = "邀请无效或已过期"
@@ -46,7 +47,7 @@ def list_members(db: Session, tenant_id: str) -> list[dict[str, Any]]:
             "email": user.email,
             "role": membership.role,
             "status": membership.status,
-            "joined_at": membership.created_at.isoformat(),
+            "joined_at": iso_utc(membership.created_at),
         }
         for user, membership in rows
     ]
@@ -85,7 +86,7 @@ def invite(db: Session, *, tenant: Tenant, actor_user_id: str, email: str, role:
         action="member.invited",
         object_type="invitation",
         object_id=invitation.id,
-        metadata={"role": role, "expires_at": expires_at.isoformat()},
+        metadata={"role": role, "expires_at": iso_utc(expires_at)},
     )
     db.commit()
     return {
@@ -93,7 +94,7 @@ def invite(db: Session, *, tenant: Tenant, actor_user_id: str, email: str, role:
         "email": normalized,
         "role": role,
         "token": token,
-        "expires_at": expires_at.isoformat(),
+        "expires_at": iso_utc(expires_at),
     }
 
 
@@ -110,8 +111,8 @@ def list_invitations(db: Session, tenant_id: str) -> list[dict[str, Any]]:
             "email": item.email,
             "role": item.role,
             "status": _effective_status(item),
-            "created_at": item.created_at.isoformat(),
-            "expires_at": item.expires_at.isoformat(),
+            "created_at": iso_utc(item.created_at),
+            "expires_at": iso_utc(item.expires_at),
         }
         for item in invitations
     ]
@@ -329,13 +330,6 @@ def remove_member(
     return {"user_id": target_user_id, "removed": True}
 
 
-def _iso_utc(value: datetime) -> str:
-    """UTC 时间戳一律输出 ...Z：既不带 `+00:00`（查询串里 `+` 会被解成空格），
-    也不随数据库方言变化（SQLite 返回 naive、PostgreSQL 返回 tz-aware）。"""
-    aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-    return aware.isoformat().replace("+00:00", "Z")
-
-
 def list_audit_events(
     db: Session, tenant_id: str, *, limit: int = 50, before: datetime | None = None
 ) -> list[dict[str, Any]]:
@@ -355,7 +349,7 @@ def list_audit_events(
             "object_type": event.object_type,
             "object_id": event.object_id,
             "metadata": event.metadata_,
-            "created_at": _iso_utc(event.created_at),
+            "created_at": iso_utc(event.created_at),
         }
         for event in db.scalars(stmt).all()
     ]

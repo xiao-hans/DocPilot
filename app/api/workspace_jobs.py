@@ -245,9 +245,11 @@ def get_job(
 
 @router.get("/{job_id}/result")
 def get_job_result(
-    job_id: str, context: TenantContext = Depends(require_roles(*READ_ROLES))
+    job_id: str,
+    context: TenantContext = Depends(require_roles(*READ_ROLES)),
+    db: Session = Depends(get_db),
 ):
-    job = _load_job(job_id, context)
+    job = _current_result(db, context, _load_job(job_id, context))
     return {
         "job_id": job.id,
         "status": job.status.value,
@@ -288,30 +290,29 @@ def retry_job(
 
 @router.get("/{job_id}/excel")
 def get_job_excel(
-    job_id: str, context: TenantContext = Depends(require_roles(*READ_ROLES))
+    job_id: str,
+    context: TenantContext = Depends(require_roles(*READ_ROLES)),
+    db: Session = Depends(get_db),
 ):
-    job = _load_job(job_id, context)
+    job = _current_result(db, context, _load_job(job_id, context))
     if job.status not in (JobStatus.SUCCEEDED, JobStatus.PARTIAL):
         raise HTTPException(status_code=404, detail="任务未完成或失败，无法导出 Excel")
 
     output_dir = OUTPUT_DIR / context.tenant.id
     output_dir.mkdir(parents=True, exist_ok=True)
-    path = Path(job.excel_path) if job.excel_path and Path(job.excel_path).is_file() else None
-    audit_event = audit.new_event(
+    # 每次按当前结果值重建，不再复用 `excel_path` 缓存：缓存文件会在人工修订之后继续给出
+    # 机器值，那正是"快照与规范化结果不一致"本身。文件名固定，重建不改变下载链接。
+    path = build_atomically(
+        lambda staging: ExcelBuilder().build(job, staging),
+        output_dir / f"{job.id}.xlsx",
+    )
+    audit.record_now(
         tenant_id=context.tenant.id,
         actor_user_id=context.auth.user.id,
         action="job.excel_exported",
         object_type="job",
         object_id=job.id,
     )
-    if path is None:
-        path = build_atomically(
-            lambda staging: ExcelBuilder().build(job, staging),
-            output_dir / f"{job.id}.xlsx",
-        )
-        job.excel_path = str(path)
-    # 导出路径与下载审计在同一事务写入，避免审计失败时业务已提交的不一致。
-    get_job_manager().save(job, audit_events=[audit_event])
     return FileResponse(
         path,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -346,25 +347,23 @@ def export_job(
     db: Session = Depends(get_db),
 ):
     """按当前结果值导出（存在人工修订时不再回退机器快照），并保持注入防护。"""
-    job = _load_job(job_id, context)
+    job = _current_result(db, context, _load_job(job_id, context))
     if job.status not in (JobStatus.SUCCEEDED, JobStatus.PARTIAL):
         raise HTTPException(status_code=404, detail="任务未完成或失败，无法导出")
 
-    rows = review.export_rows(db, tenant_id=context.tenant.id, job_id=job.id)
-    export_job_view = replace(job, result=rows) if rows else job
-
     output_dir = OUTPUT_DIR / context.tenant.id
     output_dir.mkdir(parents=True, exist_ok=True)
-    # 导出文件与 /excel 的快照缓存分开命名：两者数据源不同，覆盖会让旧链接换内容。
+    # 导出文件与 /excel 各自命名：两个端点各自有稳定链接，共用一个文件会让其中一次的
+    # 格式选择覆盖掉另一次的产物。
     if format == "csv":
         path = build_atomically(
-            lambda staging: csv_builder.build(export_job_view, staging),
+            lambda staging: csv_builder.build(job, staging),
             output_dir / f"{job.id}.csv",
         )
         media = "text/csv"
     else:
         path = build_atomically(
-            lambda staging: ExcelBuilder().build(export_job_view, staging),
+            lambda staging: ExcelBuilder().build(job, staging),
             output_dir / f"{job.id}.export.xlsx",
         )
         media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -392,6 +391,17 @@ def _compensate_upload(storage: ObjectStorage, prefix: str) -> None:
         logging.getLogger("docpilot.upload").exception(
             "孤儿对象清理失败 object_prefix=%s", prefix
         )
+
+
+def _current_result(db: Session, context: TenantContext, job: Job) -> Job:
+    """把结果行换成规范化表里的当前值（含人工修订），快照只作为历史任务的回落。
+
+    阶段 D 起机器值与修订值同时写 `extraction_results`；只要读快照，改过的字段就会在
+    `/result`、`/excel` 里退回机器值。规范化行为空说明这是阶段 D 之前的任务，那时没有
+    任何规范化记录可读，只能回到快照。
+    """
+    rows = review.export_rows(db, tenant_id=context.tenant.id, job_id=job.id)
+    return replace(job, result=rows) if rows else job
 
 
 def _load_job(job_id: str, context: TenantContext) -> Job:

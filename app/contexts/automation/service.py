@@ -26,6 +26,7 @@ from app.errors import AccessError
 from app.models.document import DocumentVersion
 from app.models.outbox import DomainEventRecord
 from app.services import audit
+from app.services.timestamps import iso_utc
 
 MAX_DISPATCH_BATCH = 100
 MAX_DETAIL_CHARS = 500
@@ -120,8 +121,8 @@ def serialize_rule(rule: EventRule, stats: dict[str, int] | None = None) -> dict
         "status": rule.status,
         "version": rule.version,
         "created_by": rule.created_by,
-        "created_at": rule.created_at.isoformat(),
-        "updated_at": rule.updated_at.isoformat(),
+        "created_at": iso_utc(rule.created_at),
+        "updated_at": iso_utc(rule.updated_at),
     }
     if stats is not None:
         payload["runs"] = stats
@@ -284,8 +285,8 @@ def list_runs(
                 "status": run.status,
                 "detail": run.detail,
                 "attempt_count": run.attempt_count,
-                "created_at": run.created_at.isoformat(),
-                "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+                "created_at": iso_utc(run.created_at),
+                "finished_at": iso_utc(run.finished_at),
             }
             for run in runs
         ],
@@ -315,7 +316,7 @@ def list_notifications(
                 "status": row.status,
                 "object_type": row.object_type,
                 "object_id": row.object_id,
-                "created_at": row.created_at.isoformat(),
+                "created_at": iso_utc(row.created_at),
             }
             for row in rows
         ],

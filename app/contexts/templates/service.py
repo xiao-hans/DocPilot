@@ -15,6 +15,7 @@ from app.contexts.templates.domain import Template, TemplateVersion
 from app.errors import AccessError
 from app.models.schema import validate_fields
 from app.services import audit
+from app.services.timestamps import iso_utc
 from app.services import outbox
 
 
@@ -46,8 +47,8 @@ def serialize(template: Template, latest_revision: int) -> dict[str, Any]:
         "status": template.status,
         "draft_fields": template.draft_fields,
         "latest_revision": latest_revision,
-        "created_at": template.created_at.isoformat(),
-        "updated_at": template.updated_at.isoformat(),
+        "created_at": iso_utc(template.created_at),
+        "updated_at": iso_utc(template.updated_at),
     }
 
 
@@ -103,7 +104,7 @@ def detail(db: Session, *, tenant_id: str, template_id: str) -> dict[str, Any]:
             "id": version.id,
             "revision": version.revision,
             "fields": version.fields,
-            "published_at": version.published_at.isoformat(),
+            "published_at": iso_utc(version.published_at),
         }
         for version in versions
     ]

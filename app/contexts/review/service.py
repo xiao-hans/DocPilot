@@ -16,6 +16,8 @@ from app.contexts.search import service as search
 from app.errors import AccessError
 from app.models.document import DocumentVersion
 from app.services import audit, outbox
+from app.services.text_safety import clean_payload, without_nul
+from app.services.timestamps import iso_utc
 
 REVIEW_ROLES = ("reviewer", "admin", "owner")
 
@@ -65,6 +67,10 @@ def record_machine_result(
 
     已被人工修订或确认过的结果不被机器值覆盖。
     """
+    # 机器值与告警直接来自解析器/模型，是最容易带进 NUL 的一段文本；PostgreSQL 会在
+    # 写入时拒掉整个事务，所以清洗放在这个入库边界，而不是散落到每个调用点。
+    values = clean_payload(values)
+    warnings = clean_payload(warnings)
     version = db.scalar(
         select(DocumentVersion).where(
             DocumentVersion.job_id == job_id,
@@ -175,9 +181,9 @@ def serialize(result: ExtractionResult, revisions: list[ResultRevision] | None =
         "values": result.values,
         "warnings": result.warnings,
         "confirmed_by": result.confirmed_by,
-        "confirmed_at": result.confirmed_at.isoformat() if result.confirmed_at else None,
-        "created_at": result.created_at.isoformat(),
-        "updated_at": result.updated_at.isoformat(),
+        "confirmed_at": iso_utc(result.confirmed_at),
+        "created_at": iso_utc(result.created_at),
+        "updated_at": iso_utc(result.updated_at),
     }
     if revisions is not None:
         payload["revisions"] = [
@@ -187,7 +193,7 @@ def serialize(result: ExtractionResult, revisions: list[ResultRevision] | None =
                 "actor_user_id": item.actor_user_id,
                 "reason": item.reason,
                 "values": item.values,
-                "created_at": item.created_at.isoformat(),
+                "created_at": iso_utc(item.created_at),
             }
             for item in revisions
         ]
@@ -239,7 +245,7 @@ def revisions(db: Session, *, tenant_id: str, result_id: str) -> list[dict[str, 
             "actor_user_id": item.actor_user_id,
             "reason": item.reason,
             "values": item.values,
-            "created_at": item.created_at.isoformat(),
+            "created_at": iso_utc(item.created_at),
         }
         for item in repository.list_revisions(db, tenant_id, result.id)
     ]
@@ -291,7 +297,7 @@ def revise(
             clean[name] = ""
         elif isinstance(raw, str):
             # 保留标量原值，但去掉 PostgreSQL 无法存储的 NUL 字节。
-            clean[name] = raw.replace("\x00", "")
+            clean[name] = without_nul(raw)
         elif isinstance(raw, (int, float, bool)):
             # 机器结果里数字就是数字，读出来改完写回应不改变类型。
             clean[name] = raw

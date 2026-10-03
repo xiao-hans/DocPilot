@@ -12,6 +12,7 @@ from app.contexts.review.domain import ExtractionResult
 from app.errors import AccessError
 from app.models.document import Document, DocumentLabel, DocumentVersion
 from app.services import audit
+from app.services.timestamps import iso_utc
 
 RETENTION_STATUSES = ("active", "purge_scheduled", "purged")
 DOCUMENT_SOURCES = ("upload",)
@@ -165,10 +166,8 @@ def list_documents(
                 "labels": labels.get(document.id, []),
                 "source": document.source,
                 "retention_status": document.retention_status,
-                "created_at": _as_utc(document.created_at).isoformat(),
-                "updated_at": (
-                    _as_utc(document.updated_at).isoformat() if document.updated_at else None
-                ),
+                "created_at": iso_utc(document.created_at),
+                "updated_at": iso_utc(document.updated_at),
                 "versions": [
                     {
                         "id": version.id,
@@ -177,7 +176,7 @@ def list_documents(
                         "media_type": version.media_type,
                         "size_bytes": version.size_bytes,
                         "checksum": version.checksum,
-                        "created_at": _as_utc(version.created_at).isoformat(),
+                        "created_at": iso_utc(version.created_at),
                     }
                     for version in versions
                 ],
@@ -297,5 +296,5 @@ def update_metadata(
         "labels": labels_of(db, tenant_id, [document.id])[document.id],
         "doc_type": document.doc_type,
         "retention_status": document.retention_status,
-        "updated_at": document.updated_at.isoformat(),
+        "updated_at": iso_utc(document.updated_at),
     }
