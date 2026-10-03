@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Generator
 from pathlib import Path
 
@@ -12,6 +13,20 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import BASE_DIR, DATABASE_URL
+
+# 一次性库的名字必须是 `<前缀>_test` 或 `test_<后缀>`：子串判断会把 `latest`
+# 这类正常库名误判为可丢弃，而清库与降级操作不可逆。
+_DISPOSABLE_DB_NAME = re.compile(r"^(?:[\w.-]*_test|test_[\w.-]+)$")
+
+
+def assert_disposable_database(database_url: str) -> str:
+    """校验目标数据库可被清空，返回库名；不合规时抛出异常。"""
+    name = make_url(database_url).database or ""
+    if not _DISPOSABLE_DB_NAME.match(name):
+        raise RuntimeError(
+            f"数据库名 {name!r} 不符合一次性库命名（<名称>_test 或 test_<名称>），拒绝清空。"
+        )
+    return name
 
 
 class Base(DeclarativeBase):

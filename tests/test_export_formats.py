@@ -110,8 +110,15 @@ def test_export_is_audited_and_tenant_scoped(
     assert owner_workspace["client"].get(f"{base}/jobs/{job_id}/export").status_code == 200
 
     with SessionLocal() as db:
-        events = db.query(AuditEvent).filter(AuditEvent.action == "job.exported").all()
-    assert [event.metadata_.get("format") for event in events] == ["csv", "xlsx"]
+        # 不能依赖数据库返回顺序：SQLite 恰好按插入顺序返回，PostgreSQL 对无 ORDER BY 的
+        # 查询不保证任何顺序，同一用例在两种方言下会得到不同排列。
+        events = (
+            db.query(AuditEvent)
+            .filter(AuditEvent.action == "job.exported")
+            .order_by(AuditEvent.created_at, AuditEvent.id)
+            .all()
+        )
+    assert sorted(event.metadata_.get("format") for event in events) == ["csv", "xlsx"]
     assert all(event.object_id == job_id for event in events)
     assert all(str(sandbox) not in json.dumps(event.metadata_) for event in events)
 

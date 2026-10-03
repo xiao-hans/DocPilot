@@ -8,14 +8,24 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+# 先读 .env 再决定测试库，使 TEST_DATABASE_URL 可以放进本地 .env 而不必每次导出环境变量。
+load_dotenv(BASE_DIR / ".env")
+
 _TMP_ROOT = Path(tempfile.mkdtemp(prefix="docpilot-pytest-"))
+
+# 设置 TEST_DATABASE_URL 时整轮用例改跑 PostgreSQL；未设置时继续用一次性 SQLite 文件。
+_PG_TEST_URL = os.getenv("TEST_DATABASE_URL", "").strip()
+_TARGET_DATABASE_URL = _PG_TEST_URL or f"sqlite:///{(_TMP_ROOT / 'test.sqlite3').as_posix()}"
 
 os.environ.update(
     {
         "APP_ENV": "development",
         "AUTH_COOKIE_SECURE": "false",
         "BOOTSTRAP_TOKEN": "pytest-deployment-token",
-        "DATABASE_URL": f"sqlite:///{(_TMP_ROOT / 'test.sqlite3').as_posix()}",
+        "DATABASE_URL": _TARGET_DATABASE_URL,
         "DATA_DIR": str(_TMP_ROOT),
         "EXTRACTOR_MODE": "mock",
         "OUTPUT_DIR": str(_TMP_ROOT / "outputs"),
@@ -25,14 +35,19 @@ os.environ.update(
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
-from sqlalchemy import delete  # noqa: E402
+from sqlalchemy import delete, text  # noqa: E402
 
 from app.contexts.processing.domain import JobAttempt
 from app.contexts.automation.domain import EventRule, NotificationRequest, RuleRun
 from app.contexts.review.domain import DocumentText, ExtractionResult, ResultRevision
 from app.contexts.search.domain import SearchEntry
 from app.contexts.templates.domain import Template, TemplateVersion
-from app.db import SessionLocal, engine, initialize_development_schema  # noqa: E402
+from app.db import (  # noqa: E402
+    SessionLocal,
+    assert_disposable_database,
+    engine,
+    initialize_development_schema,
+)
 from app.main import app  # noqa: E402
 from app.models.access import AuditEvent, Invitation  # noqa: E402
 from app.models.account import AuthSession, BootstrapState, Membership, Tenant, User  # noqa: E402
@@ -41,6 +56,14 @@ from app.models.outbox import DomainEventRecord  # noqa: E402
 from app.models.persistent_job import PersistentJob  # noqa: E402
 from app.security import hash_password  # noqa: E402
 from app.services.job_manager import get_job_manager  # noqa: E402
+
+if _PG_TEST_URL:
+    # 重建 schema 会清空该库，因此先做一次性库命名校验：
+    # 子串含 test 的判断会放过 `latest` 这类正常库名，不可用于破坏性操作。
+    assert_disposable_database(_PG_TEST_URL)
+    with engine.begin() as _connection:
+        _connection.execute(text("DROP SCHEMA public CASCADE"))
+        _connection.execute(text("CREATE SCHEMA public"))
 
 # 迁移只依赖 alembic，不依赖 TestClient 生命周期，便于不启动 lifespan 的用例直接访问数据库。
 initialize_development_schema()

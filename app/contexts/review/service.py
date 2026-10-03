@@ -289,8 +289,11 @@ def revise(
         if raw is None:
             # null 是显式清空，与"未提交该字段"不同：后者已经按缺失拒绝。
             clean[name] = ""
-        elif isinstance(raw, (str, int, float, bool)):
-            # 保留标量原值：机器结果里数字就是数字，读出来改完写回应不改变类型。
+        elif isinstance(raw, str):
+            # 保留标量原值，但去掉 PostgreSQL 无法存储的 NUL 字节。
+            clean[name] = raw.replace("\x00", "")
+        elif isinstance(raw, (int, float, bool)):
+            # 机器结果里数字就是数字，读出来改完写回应不改变类型。
             clean[name] = raw
         else:
             raise AccessError(422, f"字段 {name} 只接受标量值")

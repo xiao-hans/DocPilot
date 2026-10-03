@@ -1,0 +1,6 @@
+# 依赖栈脚本与 Compose 文件必须保持 LF：
+# 仓库在 core.autocrlf=true 的 Windows 机器上开发，CRLF 会让容器内的 sh 报错，
+# 并会让 Compose 从 .env 读到带尾部 \r 的凭据。
+*.sh text eol=lf
+docker-compose.yml text eol=lf
+*.yml text eol=lf

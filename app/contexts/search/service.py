@@ -63,6 +63,9 @@ def reindex_version(
         for entry in repository.entries_for_version(db, tenant_id, document_version_id)
     }
     for (kind, field_name), content in wanted.items():
+        # PostgreSQL 的 text 与 json 都拒绝 NUL 字节，而 SQLite 照收；索引内容必须在入库前清掉，
+        # 否则一条脏文本会让整批写入回滚。
+        content = content.replace("\x00", "")
         entry = existing.get((kind, field_name))
         if entry is None:
             db.add(

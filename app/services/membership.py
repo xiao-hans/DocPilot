@@ -329,6 +329,13 @@ def remove_member(
     return {"user_id": target_user_id, "removed": True}
 
 
+def _iso_utc(value: datetime) -> str:
+    """UTC 时间戳一律输出 ...Z：既不带 `+00:00`（查询串里 `+` 会被解成空格），
+    也不随数据库方言变化（SQLite 返回 naive、PostgreSQL 返回 tz-aware）。"""
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return aware.isoformat().replace("+00:00", "Z")
+
+
 def list_audit_events(
     db: Session, tenant_id: str, *, limit: int = 50, before: datetime | None = None
 ) -> list[dict[str, Any]]:
@@ -348,7 +355,7 @@ def list_audit_events(
             "object_type": event.object_type,
             "object_id": event.object_id,
             "metadata": event.metadata_,
-            "created_at": event.created_at.isoformat(),
+            "created_at": _iso_utc(event.created_at),
         }
         for event in db.scalars(stmt).all()
     ]
