@@ -30,16 +30,27 @@
 判定：`DRILL RESULT: PASS` 要求正向核对一致、探测对象摘要命中、三个负向注入
 （删对象 / 等长改写 1 字节 / 截断 1 字节）分别被对应判据抓到、重建副本后复跑仍一致、
 探测对象与临时容器都已回收；任何一项不成立打印 FAIL 并以退出码 1 结束。
+
+核对按"稳定"而非"一次读数"判定：恢复实例重启后各卷是逐个向 master 注册的，刚 head 通
+就去比对全部键，会把"还没稳定"读成"备份不可恢复"（本机实测 11 次第 8 步出现过 1 次不一致）。
+`settle_compare` 因此在窗口内重试，并分别给出两种结论——稳定算通过并记下核对次数与耗时，
+窗口耗尽仍不一致才算损坏且留下签名。就绪判定同样改用最大的探测对象，而不是一个 4 KB 小文件。
+
+每次运行的完整转录由脚本自己落盘到 `data/drill/object-<UTC>-<run>-<PASS|FAIL|ERROR>.log`
+（保留最近 20 份，只回收本脚本自己写的文件）。失败必须能事后追查，不能只留一句"某次跑挂了"。
 """
 
 from __future__ import annotations
 
+import builtins
 import hashlib
 import os
 import subprocess
 import sys
 import time
+import traceback
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -86,6 +97,58 @@ def existing_copy_dirs() -> list[str]:
     return sorted(path for path in out.splitlines() if path.strip())
 
 
+TRANSCRIPT: list[str] = []
+
+
+def say(*parts: object) -> None:
+    """演练唯一的输出通道：既打到终端，也留在本次转录里。"""
+    line = " ".join(str(part) for part in parts)
+    builtins.print(line)
+    TRANSCRIPT.append(line)
+
+
+def write_transcript(verdict: str) -> str:
+    """把整份转录自己落盘。
+
+    只靠调用方临时重定向不算交付物：一次真实的失败如果没留下签名，就只剩下"某次跑挂了"
+    这句无法追查的话（G7 交付后本机 11 次里那次第 8 步不一致就是这么丢的）。
+    只回收本脚本自己写的 `object-*.log`，保留最近 20 份。
+    """
+    directory = BASE_DIR / "data" / "drill"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / (
+            f"object-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{RUN}-{verdict}.log"
+        )
+        path.write_text(os.linesep.join(TRANSCRIPT) + os.linesep, encoding="utf-8")
+        stale = sorted(directory.glob("object-*.log"), key=lambda f: f.name)[:-20]
+        for old in stale:
+            old.unlink(missing_ok=True)
+        return str(path)
+    except OSError as exc:
+        builtins.print(f"转录写入失败：{type(exc).__name__}: {exc}")
+        return "(未落盘)"
+
+
+def settle_compare(source, restore, keys: list[str], window_seconds: int = 90):
+    """重复核对直到一致，或用尽窗口后带着最后一次签名判负。
+
+    恢复实例重启后各卷是逐个向 master 注册的，刚 head 通就一次性比对全部键，会把"还没
+    稳定"读成"备份不可恢复"。这两种结论完全不同，必须分开：稳定下来算通过并记下耗时与
+    尝试次数；到窗口末尾仍不一致才算损坏，并保留签名。
+    """
+    started = time.monotonic()
+    attempts = 0
+    drift = compare(source, restore, keys)
+    while any(drift):
+        if time.monotonic() - started > window_seconds:
+            break
+        time.sleep(2.0)
+        attempts += 1
+        drift = compare(source, restore, keys)
+    return not any(drift), attempts + 1, time.monotonic() - started, drift
+
+
 def client(endpoint: str):
     return boto3.client(
         "s3",
@@ -118,7 +181,7 @@ def guard_environment() -> list[str]:
     for path in existing_copy_dirs():
         wsl(f"rm -rf {path}")
     if reclaimed:
-        print(f"0) 先回收上一次演练未收尾的残留：{reclaimed}")
+        say(f"0) 先回收上一次演练未收尾的残留：{reclaimed}")
         still = existing_restore_containers() + existing_copy_dirs()
         if still:
             raise SystemExit(f"上一次演练的残留无法回收，拒绝继续：{still}")
@@ -276,22 +339,25 @@ def run_drill(source) -> int:
                 if key.startswith("docpilot/") and "/_drill-" not in key]
     keys = sorted(probes) + sorted(app_keys)
     expected_hashes = {key: hashlib.sha256(probes[key]).hexdigest() for key in probes}
-    print(f"1) 源桶 {BUCKET}：探测对象 {len(probes)} 个 + 既有应用对象 {len(app_keys)} 个")
+    say(f"1) 源桶 {BUCKET}：探测对象 {len(probes)} 个 + 既有应用对象 {len(app_keys)} 个")
 
     copy_seconds = snapshot_copy()
-    print(f"2) 卷级冷副本完成：{copy_seconds:.1f} 秒（源容器 pause 期间复制）")
+    say(f"2) 卷级冷副本完成：{copy_seconds:.1f} 秒（源容器 pause 期间复制）")
 
     started = time.monotonic()
     restore_endpoint = start_restore()
-    ready_seconds = wait_ready(restore_endpoint, probe_key("text"), expected_hashes[probe_key("text")])
+    # 就绪必须用最大的那个探测对象来判定：小对象读通了不代表 5 MB 的那份已向 master 注册完，
+    # 而后面要比对的是全部键。
+    ready_seconds = wait_ready(restore_endpoint, probe_key("large"), expected_hashes[probe_key("large")])
     restore = client(restore_endpoint)
-    print(f"3) 恢复实例可用：启动+就绪 {time.monotonic() - started:.1f} 秒（其中就绪 {ready_seconds:.1f} 秒）")
+    say(f"3) 恢复实例可用：启动+就绪 {time.monotonic() - started:.1f} 秒（其中就绪 {ready_seconds:.1f} 秒）")
 
-    missing, extra, size_bad, digest_bad = compare(source, restore, keys)
-    verified = not missing and not extra and not size_bad and not digest_bad
+    verified, attempts4, settle4, drift4 = settle_compare(source, restore, keys)
+    missing, extra, size_bad, digest_bad = drift4
     hash_ok = all(digest(restore, key) == expected_hashes[key] for key in probes)
-    print(f"4) 正向核对：{len(keys)} 个对象，缺 {len(missing)}、多 {len(extra)}、尺寸不符 {len(size_bad)}、"
-          f"摘要不符 {len(digest_bad)}，探测对象摘要全部命中={hash_ok}")
+    say(f"4) 正向核对：{len(keys)} 个对象，核对 {attempts4} 次、稳定耗时 {settle4:.1f} 秒，"
+          f"缺 {len(missing)}、多 {len(extra)}、尺寸不符 {len(size_bad)}、摘要不符 {len(digest_bad)}，"
+          f"探测对象摘要全部命中={hash_ok}")
 
     # 三个负向注入必须在同一份副本上依次被抓到，每个只断言自己那一类破坏。
     # 注入对象一律取自本次的探测前缀，绝不碰既有应用对象。
@@ -299,7 +365,7 @@ def run_drill(source) -> int:
     restore.delete_object(Bucket=BUCKET, Key=absent_key)
     neg_missing, _, _, _ = compare(source, restore, keys)
     caught_missing = absent_key in neg_missing
-    print(f"5) 负向·少对象（删除恢复侧 {absent_key.rsplit('/', 1)[-1]}）："
+    say(f"5) 负向·少对象（删除恢复侧 {absent_key.rsplit('/', 1)[-1]}）："
           f"被抓到={caught_missing} → {[k.rsplit('/', 1)[-1] for k in neg_missing]}")
 
     same_len_key = probe_key("text")
@@ -308,14 +374,14 @@ def run_drill(source) -> int:
     restore.put_object(Bucket=BUCKET, Key=same_len_key, Body=bytes(flipped))
     _, _, neg_size, neg_digest = compare(source, restore, keys)
     caught_digest = same_len_key in neg_digest and same_len_key not in neg_size
-    print(f"6) 负向·等长改写 1 字节（{same_len_key.rsplit('/', 1)[-1]}）："
+    say(f"6) 负向·等长改写 1 字节（{same_len_key.rsplit('/', 1)[-1]}）："
           f"只有摘要能抓到={caught_digest} → {[k.rsplit('/', 1)[-1] for k in neg_digest]}")
 
     trunc_key = probe_key("large")
     restore.put_object(Bucket=BUCKET, Key=trunc_key, Body=probes[trunc_key][:-1])
     _, _, neg_size2, _ = compare(source, restore, keys)
     caught_size = trunc_key in neg_size2
-    print(f"7) 负向·截断 1 字节（{trunc_key.rsplit('/', 1)[-1]}）："
+    say(f"7) 负向·截断 1 字节（{trunc_key.rsplit('/', 1)[-1]}）："
           f"尺寸检查抓到={caught_size} → {[k.rsplit('/', 1)[-1] for k in neg_size2]}")
 
     # 副本已被改写，重建一份再跑正向，确认上面的抓取是注入造成的而不是校验器本身失真
@@ -323,11 +389,17 @@ def run_drill(source) -> int:
     wsl(f"rm -rf {COPY_DIR}")
     snapshot_copy()
     restore_endpoint = start_restore()
-    wait_ready(restore_endpoint, probe_key("text"), expected_hashes[probe_key("text")])
+    wait_ready(restore_endpoint, probe_key("large"), expected_hashes[probe_key("large")])
     restore = client(restore_endpoint)
-    missing2, extra2, size2, digest2 = compare(source, restore, keys)
-    rerun_ok = not missing2 and not extra2 and not size2 and not digest2
-    print(f"8) 重建副本后复跑正向：{'一致' if rerun_ok else '仍不一致 ' + str([missing2[:1], extra2[:1], size2[:1], digest2[:1]])}")
+    # 这里正是本机出现过"某次不一致"的地方：新实例重启后各卷逐个向 master 注册，比对跑得
+    # 比注册快就会读成不一致。分开这两种结论——稳定下来算通过，窗口耗尽仍不一致才算损坏，
+    # 并把最后一次签名留下（否则失败原因只能靠重跑撞运气）。
+    rerun_ok, attempts8, settle8, drift8 = settle_compare(source, restore, keys)
+    signature = "" if rerun_ok else " 签名=" + str(
+        [[key.rsplit("/", 1)[-1] for key in group] for group in drift8]
+    )
+    say(f"8) 重建副本后复跑正向：{'一致' if rerun_ok else '窗口内始终不一致'}"
+          f"（核对 {attempts8} 次、耗时 {settle8:.1f} 秒）{signature}")
 
     for key in probes:
         source.delete_object(Bucket=BUCKET, Key=key)
@@ -335,12 +407,12 @@ def run_drill(source) -> int:
     still_probes = [key for key in listing(source) if key.startswith(DRILL_PREFIX)]
     if still_probes:
         notes.append(f"探测对象清理后仍残留 {len(still_probes)} 个")
-    print(f"9) 清理并核对：" + ("探测对象、恢复容器、副本目录均已确认不存在" if not notes else "；".join(notes)))
+    say(f"9) 清理并核对：" + ("探测对象、恢复容器、副本目录均已确认不存在" if not notes else "；".join(notes)))
 
     passed = (verified and hash_ok and caught_missing and caught_digest and caught_size
               and rerun_ok and not notes)
-    print("DRILL RESULT:", "PASS" if passed else "FAIL")
-    print(f"测量输入（不是结论）：副本 {copy_seconds:.1f} 秒、恢复就绪 {ready_seconds:.1f} 秒、"
+    say("DRILL RESULT:", "PASS" if passed else "FAIL")
+    say(f"测量输入（不是结论）：副本 {copy_seconds:.1f} 秒、恢复就绪 {ready_seconds:.1f} 秒、"
           f"端到端可核对约 {copy_seconds + ready_seconds:.1f} 秒")
     # 退出码要能被门禁直接消费：结论不成立就不是 0，别让人去读最后一行才发现问题
     return 0 if passed else 1
@@ -349,13 +421,25 @@ def run_drill(source) -> int:
 def main() -> int:
     guard_environment()
     source = client(ENDPOINT)
+    verdict = "ERROR"
     try:
-        return run_drill(source)
+        code = run_drill(source)
+        verdict = "PASS" if code == 0 else "FAIL"
+        return code
+    except BaseException:
+        # 崩在半路的那次最需要留下原因。只把 traceback 交给 stderr 是不够的：调用方一管道
+        # 就没了——本机第一次复现"第 8 步之前挂掉"时就是这样又把签名丢了。
+        say("本次运行抛出异常：")
+        say(traceback.format_exc().rstrip())
+        raise
     finally:
         # 异常路径同样要回收：上一版在这里留下过 Created 状态的容器，把端口占住，
         # 下一次演练直接起不来。清理只在 finally 里做，正常路径也不会重复删。
         for note in cleanup(source):
-            print(f"清理提示：{note}")
+            say(f"清理提示：{note}")
+        # 崩在半路的那次最需要把过程留下，所以落盘也放在 finally：只靠调用方临时重定向，
+        # 失败签名就随终端一起丢了。
+        say(f"转录已写入 {write_transcript(verdict)}")
 
 
 if __name__ == "__main__":

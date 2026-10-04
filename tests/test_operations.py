@@ -244,3 +244,134 @@ def test_readiness_probe_failure_cannot_escalate_to_500() -> None:
     assert code == 503
     assert body["queue"]["stuck"] is True
     assert body["error"] == "queue_probe:RuntimeError"
+
+
+# ---------- 失败明细下钻（FR-042）----------
+
+SENTINEL_NAME = "华鑫电子发票-2026-07.pdf"
+
+
+def _force_failed_job(tenant_id: str, *, error: str | None, status: str = "failed") -> str:
+    """直接落一条失败任务与它的两次尝试。
+
+    下钻要断言的是"错误被呈现给谁、以什么形状"，不该依赖某条真实故障链路的措辞；真实链路
+    本身由 `test_processing_reliability.py` 覆盖。
+    """
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    from app.contexts.processing.domain import JobAttempt
+    from app.models.persistent_job import PersistentJob
+
+    job_id = uuid4().hex
+    now = datetime.now(timezone.utc)
+    with SessionLocal() as db:
+        db.add(
+            PersistentJob(
+                id=job_id,
+                tenant_id=tenant_id,
+                status=status,
+                created_at=now,
+                finished_at=now,
+                attempt_count=2,
+                snapshot={"files": [], "fields": [], "status": status},
+            )
+        )
+        # 必须先落父行：`JobAttempt` 只声明到 `processing_jobs` 的外键、没有 ORM relationship，
+        # 同一次 flush 不保证父行先插入（`docs/06 §5.9` 记过同一个坑）。
+        db.flush()
+        db.add(
+            JobAttempt(
+                id=uuid4().hex, job_id=job_id, tenant_id=tenant_id, attempt_no=1, status="failed",
+                started_at=now, finished_at=now, engine="mock", parse_modes=[], error="第一次也炸",
+            )
+        )
+        db.add(
+            JobAttempt(
+                id=uuid4().hex, job_id=job_id, tenant_id=tenant_id, attempt_no=2, status="failed",
+                started_at=now, finished_at=now, engine="mock", parse_modes=[], error=error,
+            )
+        )
+        db.commit()
+    return job_id
+
+
+def test_tenant_failure_details_show_own_error_text_from_newest_attempt(
+    owner_workspace: dict, other_workspace: dict
+) -> None:
+    """租户明细给本租户自己的原文，并且取最后一次尝试的错误，不含别的租户的任务。"""
+    mine = _force_failed_job(owner_workspace["tenant_id"], error=f"解析 {SENTINEL_NAME} 失败：{SERIAL}")
+    theirs = _force_failed_job(other_workspace["tenant_id"], error="队列不可用：amqp 连接被拒")
+
+    response = owner_workspace["client"].get(
+        f"/api/v1/tenants/{owner_workspace['tenant_id']}/usage/failures?days=30"
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    items = {row["job_id"]: row for row in payload["jobs"]["items"]}
+
+    assert mine in items
+    assert SENTINEL_NAME in items[mine]["error"]
+    assert items[mine]["code"] == "document_unreadable"
+    assert "第一次也炸" not in json.dumps(payload, ensure_ascii=False)
+    assert theirs not in items
+    assert payload["jobs"]["total"] == 1
+
+
+def test_tenant_failure_details_require_membership(owner_workspace: dict, other_workspace: dict) -> None:
+    _force_failed_job(owner_workspace["tenant_id"], error="任意错误")
+    response = other_workspace["client"].get(
+        f"/api/v1/tenants/{owner_workspace['tenant_id']}/usage/failures"
+    )
+    assert response.status_code == 403, response.text
+
+
+def test_platform_failure_distribution_is_content_free(
+    owner_workspace: dict, other_workspace: dict, platform_admin_without_membership
+) -> None:
+    """跨租户的失败分布只有代号与计数：原文、文件名、发票号一律不出去。
+
+    这条断言是 DOC-DD-007 §3 那条不变式的现场版本——平台身份不授予客户数据读取权，
+    下钻也不行；要看原文必须回到租户端点，那里有成员关系与角色矩阵。
+    """
+    _force_failed_job(owner_workspace["tenant_id"], error=f"解析 {SENTINEL_NAME} 失败：{SERIAL}")
+    _force_failed_job(other_workspace["tenant_id"], error="执行超时且已达上限")
+
+    ops = platform_admin_without_membership()
+    response = ops["client"].get("/api/v1/platform/usage/failures?days=30")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+
+    codes = {row["code"]: row for row in payload["codes"]}
+    assert {"document_unreadable", "timeout"} <= set(codes)
+    assert codes["document_unreadable"]["jobs"] >= 1
+    assert payload["tenants_with_failures"] >= 2
+    assert payload["truncated"] is False
+
+    dumped = json.dumps(payload, ensure_ascii=False)
+    for leak in (SERIAL, SENTINEL_NAME, "解析", "第一次也炸"):
+        assert leak not in dumped
+
+
+def test_platform_failure_view_audits_each_listed_tenant(
+    owner_workspace: dict, other_workspace: dict, platform_admin_without_membership
+) -> None:
+    from sqlalchemy import select
+
+    _force_failed_job(owner_workspace["tenant_id"], error="提取引擎不可用（429）")
+    _force_failed_job(other_workspace["tenant_id"], error="没有可读文本，无结果")
+
+    ops = platform_admin_without_membership()
+    assert ops["client"].get("/api/v1/platform/usage/failures?days=30").status_code == 200
+
+    with SessionLocal() as db:
+        rows = list(
+            db.scalars(
+                select(AuditEvent).where(AuditEvent.action == "platform.usage_failures_viewed")
+            ).all()
+        )
+    assert {row.tenant_id for row in rows} >= {
+        owner_workspace["tenant_id"],
+        other_workspace["tenant_id"],
+    }
+    assert all(row.metadata_["scope"] == "platform" for row in rows)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -11,6 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.contexts.automation.domain import EventRule, RuleRun
+from app.contexts.processing.domain import JobAttempt
 from app.contexts.review.domain import ExtractionResult, ResultRevision
 from app.contexts.search.domain import SearchEntry
 from app.errors import AccessError
@@ -18,6 +20,7 @@ from app.models.account import Tenant
 from app.models.document import Document, DocumentVersion
 from app.models.outbox import DomainEventRecord
 from app.models.persistent_job import PersistentJob
+from app.services.timestamps import iso_utc
 
 MAX_WINDOW_DAYS = 365
 DEFAULT_WINDOW_DAYS = 30
@@ -286,3 +289,220 @@ def _alembic_version_column():
     from sqlalchemy import column, table
 
     return table("alembic_version", column("version_num")).c.version_num
+
+
+# ---------- 失败明细下钻（FR-042，DOC-DD-007 §5）----------
+
+FAILURE_SCAN_CAP = 5000
+
+# 分类是启发式的：错误文本由我们自己那几条处理链路写出，已知形状给稳定代号，其余只给指纹。
+# 顺序有意义——先命中的规则赢，所以更具体的词排在泛化词前面。
+_FAILURE_RULES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("timeout", "执行超时", ("超时", "timeout")),
+    ("queue_unavailable", "队列不可用", ("broker", "amqp", "rabbitmq")),
+    ("engine_unavailable", "提取引擎不可用", ("401", "403", "429", "rate limit", "unauthorized", "invalid api key")),
+    ("document_unreadable", "文档无法读取", ("pdf", "解析", "损坏", "corrupt", "ocr", "image")),
+    ("no_results", "未提取到结果", ("无结果", "no result", "empty")),
+)
+
+
+def classify_failure(error: str | None) -> dict[str, str]:
+    """把错误文本归成代号与标签。
+
+    平台视图跨租户，不能把文件名、正文或原文带出去；而 DOC-DD-007 §3 的"失败摘要不返回错误
+    文本"这条不变式又要求运营看得出错在哪一类。代号同时满足两边：已知形状给代号加中文标签，
+    未知形状只给文本指纹与长度——原文一个字都不回显。
+    """
+    text = (error or "").strip()
+    if not text:
+        return {"code": "unreported", "label": "无错误信息记录"}
+    lowered = text.lower()
+    for code, label, markers in _FAILURE_RULES:
+        if any(marker in lowered for marker in markers):
+            return {"code": code, "label": label}
+    fingerprint = hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+    return {
+        "code": f"unclassified-{fingerprint}",
+        "label": f"未分类错误（指纹 {fingerprint}，{len(text)} 字符）",
+    }
+
+
+def _attempt_errors(db: Session, job_ids: list[str]) -> dict[str, str | None]:
+    """每个任务取 `attempt_no` 最大的那条运行记录的错误文本。
+
+    分两次普通查询而不是相关子查询：SQLite 与 PostgreSQL 在"每组取最后一行"上的写法差异是
+    已知的方言坑，而这里要读的行数已被分页与扫描上限夹住。
+    """
+    if not job_ids:
+        return {}
+    best: dict[str, tuple[int, str | None]] = {}
+    for attempt_no, job_id, error in db.execute(
+        select(JobAttempt.attempt_no, JobAttempt.job_id, JobAttempt.error).where(
+            JobAttempt.job_id.in_(job_ids)
+        )
+    ).all():
+        current = best.get(job_id)
+        if current is None or int(attempt_no) > current[0]:
+            best[job_id] = (int(attempt_no), error)
+    return {job_id: value[1] for job_id, value in best.items()}
+
+
+def _window(days: int) -> tuple[int, datetime]:
+    window_days = min(max(days, 1), MAX_WINDOW_DAYS)
+    return window_days, _now() - timedelta(days=window_days)
+
+
+def tenant_failures(
+    db: Session,
+    *,
+    tenant_id: str,
+    days: int = DEFAULT_WINDOW_DAYS,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """本租户的失败明细：可以出现该租户自己的错误文本与任务号，但不越到别的租户。"""
+    window_days, since = _window(days)
+    size = min(max(limit, 1), PAGE_MAX)
+    skip = max(offset, 0)
+
+    total = int(
+        db.scalar(
+            select(func.count(PersistentJob.id)).where(
+                PersistentJob.tenant_id == tenant_id,
+                PersistentJob.status.in_(["failed", "partial"]),
+                PersistentJob.finished_at >= since,
+            )
+        )
+        or 0
+    )
+    jobs = list(
+        db.scalars(
+            select(PersistentJob)
+            .where(
+                PersistentJob.tenant_id == tenant_id,
+                PersistentJob.status.in_(["failed", "partial"]),
+                PersistentJob.finished_at >= since,
+            )
+            .order_by(PersistentJob.finished_at.desc(), PersistentJob.id.desc())
+            .limit(size)
+            .offset(skip)
+        ).all()
+    )
+    errors = _attempt_errors(db, [job.id for job in jobs])
+    items = [
+        {
+            "job_id": job.id,
+            "status": job.status,
+            "attempt_count": job.attempt_count,
+            "error": errors.get(job.id),
+            "finished_at": iso_utc(job.finished_at),
+            **classify_failure(errors.get(job.id)),
+        }
+        for job in jobs
+    ]
+
+    runs_total = int(
+        db.scalar(
+            select(func.count(RuleRun.id)).where(
+                RuleRun.tenant_id == tenant_id,
+                RuleRun.status == "failed",
+                RuleRun.created_at >= since,
+            )
+        )
+        or 0
+    )
+    run_items = [
+        {
+            "run_id": run_id,
+            "event_type": event_type,
+            "detail": detail,
+            "created_at": iso_utc(created_at),
+            **classify_failure(detail),
+        }
+        for run_id, event_type, detail, created_at in db.execute(
+            select(RuleRun.id, RuleRun.event_type, RuleRun.detail, RuleRun.created_at)
+            .where(
+                RuleRun.tenant_id == tenant_id,
+                RuleRun.status == "failed",
+                RuleRun.created_at >= since,
+            )
+            .order_by(RuleRun.created_at.desc())
+            .limit(size)
+            .offset(skip)
+        ).all()
+    ]
+
+    return {
+        "window_days": window_days,
+        "page": {"limit": size, "offset": skip},
+        "jobs": {"total": total, "items": items},
+        "rule_runs": {"total": runs_total, "items": run_items},
+        "generated_at": iso_utc(_now()),
+    }
+
+
+def platform_failures(
+    db: Session, *, days: int = DEFAULT_WINDOW_DAYS, scan_cap: int = FAILURE_SCAN_CAP
+) -> dict[str, Any]:
+    """跨租户的失败分布：只有代号与计数，不含错误原文、文件名、正文、邮箱（DOC-DD-007 §3）。
+
+    下钻到这里就到"哪一类错误、影响了几个租户"为止；要看某条任务的原文必须回到租户端点，
+    那里有成员关系与角色矩阵把关。
+    """
+    window_days, since = _window(days)
+    rows = db.execute(
+        select(
+            PersistentJob.id,
+            PersistentJob.tenant_id,
+            PersistentJob.finished_at,
+        )
+        .where(
+            PersistentJob.status.in_(["failed", "partial"]),
+            PersistentJob.finished_at >= since,
+        )
+        .order_by(PersistentJob.finished_at.desc())
+        .limit(scan_cap)
+    ).all()
+    errors = _attempt_errors(db, [row.id for row in rows])
+
+    buckets: dict[str, dict[str, Any]] = {}
+    tenants: set[str] = set()
+    for row in rows:
+        tenants.add(row.tenant_id)
+        kind = classify_failure(errors.get(row.id))
+        bucket = buckets.setdefault(
+            kind["code"],
+            {
+                "code": kind["code"],
+                "label": kind["label"],
+                "jobs": 0,
+                "tenants": set(),
+                "last_seen": None,
+            },
+        )
+        bucket["jobs"] += 1
+        bucket["tenants"].add(row.tenant_id)
+        if bucket["last_seen"] is None or row.finished_at > bucket["last_seen"]:
+            bucket["last_seen"] = row.finished_at
+
+    codes = [
+        {
+            "code": bucket["code"],
+            "label": bucket["label"],
+            "jobs": bucket["jobs"],
+            "tenants_affected": len(bucket["tenants"]),
+            "last_seen": iso_utc(bucket["last_seen"]),
+        }
+        for bucket in sorted(buckets.values(), key=lambda b: (-b["jobs"], b["code"]))
+    ]
+    return {
+        "window_days": window_days,
+        "scanned_rows": len(rows),
+        # 撞到扫描上限就如实说明：宁可报"看不全"，也不给一个看起来完整的分布。
+        "truncated": len(rows) >= scan_cap,
+        "scan_cap": scan_cap,
+        "tenants_with_failures": len(tenants),
+        "tenant_ids": sorted(tenants),
+        "codes": codes,
+        "generated_at": iso_utc(_now()),
+    }
