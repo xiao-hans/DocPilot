@@ -31,6 +31,8 @@ METADATA_KEYS: dict[str, frozenset[str]] = {
     "template.retired": frozenset({"name"}),
     "template.copied": frozenset({"name"}),
     "document.metadata_updated": frozenset({"changed", "rule_id"}),
+    # 内容签名核对是只读检查，审计记的是"查过几次、结果形状"，不记文件名与摘要正文。
+    "document.integrity_checked": frozenset({"checked", "clean", "counts"}),
     "rule.created": frozenset({"event_type", "action_type", "version"}),
     "rule.updated": frozenset({"changed", "version"}),
     "platform.usage_viewed": frozenset({"scope", "window_days", "rows"}),
