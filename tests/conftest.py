@@ -108,6 +108,22 @@ def clean_database():
 
 
 @pytest.fixture(autouse=True)
+def pinned_run_form(request, monkeypatch: pytest.MonkeyPatch) -> None:
+    """用例的队列形态由标记决定，不跟着调用者的 shell 走。
+
+    `BROKER_URL` 一旦被导出（比如同一条 shell 里刚跑完 `-m broker` 又去跑 `-m s3`），
+    上传端点就把任务投进队列而不是进程内执行；没有 Worker 消费时任务停在 `queued`，
+    于是与队列无关的门禁会因为环境里多一个变量而红——排查方向完全指错地方。
+    真实 broker 用例（`-m broker`）自己把开关打开，`queue_mode` 这类夹具在函数体内
+    再设一次，仍会覆盖这里的默认值。
+    """
+    if request.node.get_closest_marker("broker"):
+        return
+    monkeypatch.setattr("app.api.workspace_jobs.QUEUE_ENABLED", False)
+    monkeypatch.setattr("app.contexts.processing.service.QUEUE_ENABLED", False)
+
+
+@pytest.fixture(autouse=True)
 def clean_job_manager():
     """同步清理进程级任务缓存，避免数据库清库后残留任务污染后续用例。"""
     manager = get_job_manager()

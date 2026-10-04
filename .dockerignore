@@ -1,0 +1,19 @@
+# 只送进镜像的必要内容；.venv 与前端依赖里都是宿主机专属二进制，带进来只会又慢又坏。
+.git
+.gitignore
+.dockerignore
+.env
+.venv
+.idea
+.pytest_cache
+.ruff_cache
+data
+outputs
+uploads
+frontend/node_modules
+frontend/dist
+frontend/test-results
+frontend/tests
+*.log
+docs
+pr.json

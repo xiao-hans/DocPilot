@@ -23,6 +23,7 @@ export default function globalTeardown(): void {
   const data = JSON.parse(readFileSync(SERVERS_FILE, 'utf8')) as {
     started: { pid: number; role: string }[]
     compose?: boolean
+    appContainers?: boolean
     run?: string
   }
   for (const s of data.started) {
@@ -43,6 +44,16 @@ export default function globalTeardown(): void {
   }
 
   if (data.compose && data.run) {
+    if (data.appContainers) {
+      // 容器要先停：删库时 Worker 还连着会把连接一起杀掉，容器侧表现为莫名重启。
+      const down = spawnSync(VENV_PY, ['-X', 'utf8', COMPOSE_HELPER, 'app-down'], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+      })
+      for (const line of `${down.stdout ?? ''}${down.stderr ?? ''}`.trim().split(/\r?\n/)) {
+        process.stdout.write(`[teardown] ${line}\n`)
+      }
+    }
     const res = spawnSync(
       VENV_PY,
       ['-X', 'utf8', COMPOSE_HELPER, 'teardown', '--run', data.run],

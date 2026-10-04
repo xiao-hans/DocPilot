@@ -1,8 +1,42 @@
-# DocPilot 本地开发依赖栈（docs/17 §3）。只承载基础设施：
-# 应用与 Worker 仍在仓库的 Python venv 中运行，端口只绑 127.0.0.1。
+# DocPilot 本地开发依赖栈（docs/17 §3）。基础设施三件套始终启动；应用侧容器挂在 profile: app 下。
 # 凭据来自同目录 .env（已 gitignore），见 .env.example。
 
 name: docpilot-dev
+
+# 应用侧容器（profile: app）。默认 `docker compose up` 仍只起基础设施，G1 以来的开发基线不变；
+# 要整栈（含 API/派发器/Worker）用 `docker compose --profile app`。
+#
+# 为什么容器要一套单独的地址（APP_* 变量）：容器内连不到 Windows 侧的 127.0.0.1，
+# 必须走 compose 网络里的服务名（postgres / rabbitmq / object-store）。主机侧脚本仍用 127.0.0.1。
+#
+# 锚点必须在 services 之前定义，也必须在被引用的那个键之前完整展开——所以这两块放文件顶部。
+# 变量一律带空默认值而不是 ${VAR:?}：:? 会在解析整份文件时求值，
+# 没启用 app profile 的 `docker compose up` 也会被拖垮。缺配置交给 app 自己的配置校验报错。
+x-app-env: &app-env
+  APP_ENV: ${APP_ENV:-production}
+  DATABASE_URL: ${APP_DATABASE_URL:-}
+  BROKER_URL: ${APP_BROKER_URL:-}
+  QUEUE_NAME: ${QUEUE_NAME:-docpilot.processing}
+  STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+  # 容器里连不到主机侧发布的 127.0.0.1:8333，所以端点单独用一个 APP_ 前缀的键，
+  # 默认走 compose 服务名。与主机侧 .env 的 S3_ENDPOINT_URL 同名会怎样？开发基线里那正是
+  # 127.0.0.1，同一份 .env 喂给容器就会表现为对象读写全失败——所以这里不接受那个值。
+  S3_ENDPOINT_URL: ${APP_S3_ENDPOINT_URL:-http://object-store:8333}
+  S3_BUCKET: ${S3_BUCKET:-}
+  S3_REGION: ${S3_REGION:-us-east-1}
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+  S3_KEY_PREFIX: ${S3_KEY_PREFIX:-docpilot}
+  BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN:-}
+  AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-true}
+  AUTH_SESSION_DAYS: ${AUTH_SESSION_DAYS:-7}
+  EXTRACTOR_MODE: ${EXTRACTOR_MODE:-mock}
+  DISPATCH_POLL_SECONDS: ${DISPATCH_POLL_SECONDS:-2}
+  JOB_LEASE_SECONDS: ${JOB_LEASE_SECONDS:-120}
+
+x-app-build: &app-build
+  build: .
+  image: docpilot-app:dev
 
 services:
   postgres:
@@ -68,7 +102,69 @@ services:
       retries: 12
       start_period: 15s
 
+  # 一次性迁移服务：迁移不藏在 API 的 lifespan 里（docs/17 §4），跑完就退出，
+  # 其余三个服务用 service_completed_successfully 等它成功——失败会让 up 直接失败，
+  # 而不是留下一个"起来了但库还是旧的"栈。
+  migrate:
+    profiles: ["app"]
+    <<: *app-build
+    command: ["python", "-m", "alembic", "-c", "alembic.ini", "upgrade", "head"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    healthcheck:
+      disable: true
+
+  api:
+    profiles: ["app"]
+    <<: *app-build
+    command: ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      object-store:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - app-data:/srv/docpilot/data
+
+  dispatcher:
+    profiles: ["app"]
+    <<: *app-build
+    command: ["python", "-m", "app.dispatcher"]
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+  # 一个 Worker 就够端到端用；要压并发用 --scale worker=N（队列名共用，天然分活）。
+  worker:
+    profiles: ["app"]
+    <<: *app-build
+    command: ["python", "-m", "app.worker"]
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      object-store:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
 volumes:
   postgres-data:
   rabbitmq-data:
   object-store-data:
+  app-data:
