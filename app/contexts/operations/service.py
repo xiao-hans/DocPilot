@@ -22,6 +22,7 @@ from app.models.account import Tenant
 from app.models.document import Document, DocumentVersion
 from app.models.outbox import DomainEventRecord
 from app.models.persistent_job import PersistentJob
+from app.services.job_repository import incomplete_rebuild_count
 from app.services.timestamps import iso_utc
 
 MAX_WINDOW_DAYS = 365
@@ -170,7 +171,12 @@ def platform_usage(
     total_tenants = int(db.scalar(select(func.count(Tenant.id))) or 0)
     tenant_ids = [tenant.id for tenant in tenants]
     if not tenant_ids:
-        return {"window_days": window, "total_tenants": total_tenants, "tenants": []}
+        return {
+            "window_days": window,
+            "total_tenants": total_tenants,
+            "job_rebuild_incomplete": incomplete_rebuild_count(),
+            "tenants": [],
+        }
 
     document_counts = dict(
         db.execute(
@@ -239,6 +245,10 @@ def platform_usage(
             "storage_bytes": sum(row["storage_bytes"] for row in rows),
             "pending_events": sum(row["pending_events"] for row in rows),
         },
+        # 快照退役 R5 的观察期判据（docs/20 §6.1）：不可重建的任务读一次记一次。
+        # 它是**进程内**计数，重启归零、多进程各算各的，所以只用来回答"这段时间里
+        # 有没有出现过读不出来的任务"，不能被当成跨进程的累计指标。
+        "job_rebuild_incomplete": incomplete_rebuild_count(),
         "tenants": rows,
     }
 

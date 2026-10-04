@@ -128,3 +128,39 @@ def test_attempt_error_survives_the_rebuild(owner_workspace, make_invoice_pdf):
     assert job.error == "第 3 页无法解析"
     assert job.warnings == ["带过一页"]
     assert job.status is JobStatus.SUCCEEDED
+
+
+def test_observation_counter_is_visible_on_the_platform_usage_view(owner_workspace):
+    """`docs/20 §6.1` 的"观察期内没有回退读路径"必须能被查到，否则它还是句主观说法。
+
+    计数是进程内的，别的用例可能已经加过，所以断言的是增量而不是绝对值。
+    """
+    import uuid as _uuid
+
+    from app.models.persistent_job import PersistentJob
+
+    payload = owner_workspace["client"].get("/api/v1/platform/usage?days=30").json()
+    assert "job_rebuild_incomplete" in payload
+    before = payload["job_rebuild_incomplete"]
+
+    broken_id = _uuid.uuid4().hex
+    with SessionLocal() as db:
+        db.add(
+            PersistentJob(
+                id=broken_id,
+                tenant_id=owner_workspace["tenant_id"],
+                owner_id=owner_workspace["user_id"],
+                status="succeeded",
+                created_at=datetime.now(timezone.utc),
+                attempt_count=1,
+                snapshot={"fields": [], "files": [], "status": "succeeded", "progress": "done"},
+            )
+        )
+        db.commit()
+    try:
+        JobRepository().get(broken_id, owner_workspace["tenant_id"])
+    except IncompleteJobFacts:
+        pass
+
+    after = owner_workspace["client"].get("/api/v1/platform/usage?days=30").json()
+    assert after["job_rebuild_incomplete"] == before + 1

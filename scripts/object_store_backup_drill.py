@@ -219,8 +219,21 @@ def digest(s3, key: str) -> str:
     return hasher.hexdigest()
 
 
+def _file_sizes(target: str) -> list[int]:
+    """列出一棵树里每个文件的字节数。求和放在 Python 侧做：容器里只有 busybox，
+    再套一层 awk 会让引号穿过三层 shell，那种命令没人敢改。"""
+    out = wsl(f"docker run --rm -v {SOURCE_VOLUME}:/probe:ro -v {COPY_DIR}:/backup alpine "
+              f"find {target} -type f -exec stat -c %s {{}} +")
+    return [int(x) for x in out.split() if x.isdigit()]
+
+
 def snapshot_copy() -> float:
-    """pause 源容器后复制卷，得到一致性冷副本；unpause 后测量源端点恢复服务的耗时。"""
+    """pause 源容器后复制卷，得到冷副本；**复制完立刻逐文件核对字节多重集合**。
+
+    这一道核对是为了让失败可归因：副本本身不完整（复制少了）与恢复实例读不出来
+    （卷注册/索引问题）是两类不同的缺陷，混成一条 IncompleteRead 会让人往错方向查。
+    源容器此刻是 pause 状态，所以两边必须一模一样，没有"差不多就行"的余地。
+    """
     wsl(f"docker pause {SOURCE_CONTAINER}")
     try:
         started = time.monotonic()
@@ -229,6 +242,17 @@ def snapshot_copy() -> float:
             f"-v {SOURCE_VOLUME}:/source:ro -v {COPY_DIR}:/backup alpine "
             "sh -c 'cp -a /source/. /backup/ && du -s /backup'"
         )
+        source_sizes = sorted(_file_sizes("/probe"))
+        backup_sizes = sorted(_file_sizes("/backup"))
+        if source_sizes != backup_sizes:
+            missing = sum(source_sizes) - sum(backup_sizes)
+            raise RuntimeError(
+                "冷副本与源不一致：源 "
+                f"{len(source_sizes)} 个文件 / {sum(source_sizes)} 字节，副本 "
+                f"{len(backup_sizes)} 个文件 / {sum(backup_sizes)} 字节（差 {missing} 字节）。"
+                "这是复制环节的问题，不是恢复实例慢——两类失败不能混报。"
+            )
+        say(f"  副本核对：{len(source_sizes)} 个文件 / {sum(source_sizes)} 字节，与源逐文件一致")
         return time.monotonic() - started
     finally:
         wsl(f"docker unpause {SOURCE_CONTAINER}")
