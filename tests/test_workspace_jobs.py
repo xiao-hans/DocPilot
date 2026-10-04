@@ -154,6 +154,98 @@ def test_interrupted_job_returns_to_queue_on_startup(
     assert job.id in manager.pending_job_ids()
 
 
+"""退役旧版无租户 `/api/jobs` 时从 `tests/test_api.py` 迁来的边界用例：这些行为在租户作用域
+API 上早就存在（校验逻辑是旧版的超集），缺的只是断言。迁移在先、删除在后，避免"删了旧接口
+也顺手删掉了它唯一 covering 的用例"这种静默掉覆盖。
+"""
+
+import pytest
+
+
+def _detail(workspace: dict, job_id: str) -> dict:
+    return workspace["client"].get(
+        f"/api/v1/tenants/{workspace['tenant_id']}/jobs/{job_id}"
+    ).json()
+
+
+def test_upload_rejects_oversize_file_with_413(
+    owner_workspace: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """超过 MAX_UPLOAD_MB → 413，且是"先校验后落盘"，租户目录不留半成品。"""
+    monkeypatch.setattr("app.api.workspace_jobs.MAX_UPLOAD_MB", 1)
+    resp = _create_job(owner_workspace, [("big.pdf", b"x" * (1024 * 1024 + 1))])
+    assert resp.status_code == 413
+    assert "文件过大" in resp.json()["detail"]
+
+
+def test_upload_rejects_too_many_files(owner_workspace: dict, make_invoice_pdf) -> None:
+    payload = make_invoice_pdf().read_bytes()
+    resp = _create_job(owner_workspace, [(f"f{i}.pdf", payload) for i in range(11)])
+    assert resp.status_code == 400
+    assert "数量" in resp.json()["detail"]
+
+
+def test_upload_rejects_empty_field_list(owner_workspace: dict, make_invoice_pdf) -> None:
+    resp = _create_job(
+        owner_workspace,
+        [("f.pdf", make_invoice_pdf().read_bytes())],
+        fields=json.dumps([]),
+    )
+    assert resp.status_code == 400
+    assert "字段" in resp.json()["detail"] or "空" in resp.json()["detail"]
+
+
+def test_upload_rejects_too_many_fields(
+    owner_workspace: dict, sandbox: Path, make_invoice_pdf
+) -> None:
+    """字段数上限的拒绝发生在写盘之前，所以文件内容无关紧要也不能留下对象。"""
+    many = [{"name": f"字段{i}", "type": "text", "description": "x"} for i in range(31)]
+    resp = _create_job(
+        owner_workspace, [("f.pdf", make_invoice_pdf().read_bytes())],
+        fields=json.dumps(many, ensure_ascii=False),
+    )
+    assert resp.status_code == 400
+    assert "不能超过" in resp.json()["detail"]
+    assert (sandbox / owner_workspace["tenant_id"]).exists() is False
+
+
+def test_corrupted_document_marks_job_failed(
+    owner_workspace: dict, sandbox: Path
+) -> None:
+    """扩展名合法但内容不是 PDF：任务创建成功、执行判为 failed，错误可读。"""
+    resp = _create_job(owner_workspace, [("broken.pdf", b"\x00\x01\x02 not a pdf at all")])
+    assert resp.status_code == 201, resp.text
+    detail = _detail(owner_workspace, resp.json()["job_id"])
+    assert detail["status"] == "failed"
+    assert isinstance(detail.get("error"), str) and len(detail["error"]) > 0
+    assert detail.get("result") in (None, [])
+
+
+def test_multi_file_job_returns_one_result_row_per_file(
+    owner_workspace: dict, make_invoice_pdf
+) -> None:
+    """一次任务两份文件 → 每个文件一行结果，值按各自的文档产生，不串。"""
+    inv_a, inv_b = "20250112003040001111", "20250112003040002222"
+    resp = _create_job(
+        owner_workspace,
+        [
+            ("batch_a.pdf", make_invoice_pdf(inv_a).read_bytes()),
+            ("batch_b.pdf", make_invoice_pdf(inv_b).read_bytes()),
+        ],
+    )
+    assert resp.status_code == 201, resp.text
+    job_id = resp.json()["job_id"]
+    assert _detail(owner_workspace, job_id)["status"] == "succeeded"
+
+    rows = owner_workspace["client"].get(
+        f"/api/v1/tenants/{owner_workspace['tenant_id']}/jobs/{job_id}/result"
+    ).json()["result"]
+    by_file = {row["file"]: row["values"] for row in rows}
+    assert set(by_file) == {"batch_a.pdf", "batch_b.pdf"}
+    assert by_file["batch_a.pdf"]["发票号码"] == inv_a
+    assert by_file["batch_b.pdf"]["发票号码"] == inv_b
+
+
 def test_anonymous_and_foreign_tenant_cannot_create_jobs(other_workspace: dict) -> None:
     anonymous = TestClient(app)
     assert anonymous.post(

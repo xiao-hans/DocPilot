@@ -1,5 +1,5 @@
 /**
- * 任务轮询 composable：每 1s 轮询 GET /api/jobs/{id}，上限 60 次。
+ * 任务轮询 composable：每 1s 轮询 GET /api/v1/tenants/{tenantId}/jobs/{id}，上限 60 次。
  * 成功 → 拉取 /result 后定格；失败/超时/连接错误 → 给出提示（status 区分）。
  */
 

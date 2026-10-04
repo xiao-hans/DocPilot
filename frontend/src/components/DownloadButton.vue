@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 下载按钮（第三幕）：Excel 直链下载。
- * <a href="/api/jobs/{id}/excel" download>，由浏览器处理 Content-Disposition，
+ * <a href="/api/v1/tenants/{id}/jobs/{jobId}/excel" download>，由浏览器处理 Content-Disposition，
  * 不经过 fetch blob。
  */
 

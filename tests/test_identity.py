@@ -186,15 +186,42 @@ def test_suspended_tenant_is_rejected(owner_workspace: dict) -> None:
 # ---------- 旧演示接口 ----------
 
 
-def test_legacy_demo_api_hidden_outside_development(
+def test_index_serves_built_frontend_or_reports_unbuilt(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """两条分支都要断言到：有构建产物就服务它，没有就 503 说清下一步。
+
+    原来这里没有分支覆盖，只有一条"根路径返回旧演示页"的断言；那个页面依赖已退役的
+    `/api/jobs`，留着它就是留一个点开即 404 的界面。用 skip 躲开"本机恰好已构建"会让
+    这条用例在这台机器上什么都不验证，所以改成把 `_FRONTEND_DIST` 指到临时目录。
+    """
+    monkeypatch.setattr("app.main._FRONTEND_DIST", tmp_path / "missing")
+    unbuilt = client.get("/")
+    assert unbuilt.status_code == 503
+    assert "前端尚未构建" in unbuilt.json()["detail"]
+
+    built = tmp_path / "built"
+    built.mkdir()
+    (built / "index.html").write_text("<!doctype html><title>DocPilot</title>", encoding="utf-8")
+    monkeypatch.setattr("app.main._FRONTEND_DIST", built)
+    served = client.get("/")
+    assert served.status_code == 200
+    assert "doctype" in served.text.lower()
+
+
+def test_tenantless_job_api_is_gone_in_every_environment(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """无租户任务接口已退役：不再依赖"只在开发环境暴露"的门禁，而是根本不存在。
+
+    原来这里测的是 `ensure_legacy_demo_enabled` 那道环境门禁（开发环境 200、生产 404）。
+    门禁挡不住误配的部署，退役后接口在所有环境下都是 404。
+    """
     upload = {"files": ("a.pdf", b"%PDF-1.4", "application/pdf")}
     form = {"fields": "[]"}
 
-    monkeypatch.setattr("app.api.dependencies.APP_ENV", "development")
-    assert client.post("/api/jobs", files=upload, data=form).status_code != 404
-
-    monkeypatch.setattr("app.api.dependencies.APP_ENV", "production")
-    assert client.post("/api/jobs", files=upload, data=form).status_code == 404
-    assert client.get("/api/jobs/" + NO_SUCH_JOB).json()["detail"] == "接口不存在"
+    for env in ("development", "production"):
+        monkeypatch.setattr("app.config.APP_ENV", env)
+        assert client.post("/api/jobs", files=upload, data=form).status_code == 404
+        assert client.get("/api/jobs/" + NO_SUCH_JOB).status_code == 404
+        assert client.get(f"/api/jobs/{NO_SUCH_JOB}/excel").status_code == 404

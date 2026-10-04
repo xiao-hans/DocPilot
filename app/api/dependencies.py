@@ -10,7 +10,7 @@ from fastapi import Depends, Header, HTTPException, Path, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import APP_ENV, AUTH_COOKIE_NAME
+from app.config import AUTH_COOKIE_NAME
 from app.db import get_db
 from app.models.account import AuthSession, Membership, Tenant, User
 from app.security import token_hash
@@ -105,9 +105,3 @@ def require_platform_admin(
     if not auth.user.is_platform_admin:
         raise HTTPException(status_code=403, detail="需要平台管理员身份")
     return auth
-
-
-def ensure_legacy_demo_enabled() -> None:
-    """旧版无租户任务 API 仅允许在开发环境使用。"""
-    if APP_ENV != "development":
-        raise HTTPException(status_code=404, detail="接口不存在")

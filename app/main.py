@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import auth, members, routes, tenants, workspace_jobs
+from app.api import auth, members, tenants, workspace_jobs
 from app.config import APP_ENV, BASE_DIR, DATABASE_URL, QUEUE_ENABLED, UPLOAD_DIR
 from app.contexts.automation import api as automation_api
 from app.contexts.documents import api as documents_api
@@ -43,7 +42,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="DocPilot", lifespan=lifespan)
-app.include_router(routes.router)
 app.include_router(auth.router)
 app.include_router(tenants.router)
 app.include_router(workspace_jobs.router)
@@ -64,7 +62,6 @@ async def access_error_handler(_request: Request, exc: AccessError) -> JSONRespo
     """服务层的业务拒绝统一翻译成 HTTP 响应，保持状态码语义单一来源。"""
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
-_STATIC_DIR = Path(__file__).resolve().parent / "static"
 _FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
 
 if (_FRONTEND_DIST / "assets").is_dir():
@@ -77,12 +74,19 @@ if (_FRONTEND_DIST / "assets").is_dir():
 
 @app.get("/", include_in_schema=False)
 async def index():
+    """只服务已构建的前端。
+
+    这里原来还有一层"开发环境退回旧演示页"的分支，而演示页调的正是本次退役的
+    `/api/jobs`；留下它就等于留一个点开即 404 的界面。开发环境改由 Vite (5173) 提供 UI，
+    API 根路径在没有构建产物时统一 503 并说明怎么办。
+    """
     dist_index = _FRONTEND_DIST / "index.html"
     if dist_index.is_file():
         return FileResponse(dist_index, media_type="text/html")
-    if APP_ENV == "production":
-        raise HTTPException(status_code=503, detail="前端尚未构建")
-    return FileResponse(_STATIC_DIR / "index.html", media_type="text/html")
+    raise HTTPException(
+        status_code=503,
+        detail="前端尚未构建：跑 `npm --prefix frontend run build`，或用 `npm run dev` 访问 5173",
+    )
 
 
 if __name__ == "__main__":
