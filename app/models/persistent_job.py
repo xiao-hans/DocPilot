@@ -38,6 +38,11 @@ class PersistentJob(Base):
     # 引用创建任务时冻结的模板版本；跨租户引用由复合外键在数据库层阻止。
     template_version_id: Mapped[str | None] = mapped_column(String(32))
     snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    # 快照退役 R1（docs/20 §3）：可空 = 还没回填，不用默认值去猜历史行的意思。
+    # field_definitions 只在创建时写入，之后不可变；template_version_id 非空时以模板版本为准。
+    field_definitions: Mapped[list[Any] | None] = mapped_column(JSON, nullable=True)
+    # progress 与 status 同事务写入：二者不可分开更新，否则进度会说出状态没承认的话。
+    progress: Mapped[str | None] = mapped_column(String(24), nullable=True)
 
     __table_args__ = (
         ForeignKeyConstraint(

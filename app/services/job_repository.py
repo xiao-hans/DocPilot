@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import sessionmaker
 
 from app.db import SessionLocal
@@ -13,6 +13,7 @@ from app.models.access import AuditEvent
 from app.models.document import Document, DocumentVersion
 from app.services import outbox
 from app.contexts.processing import dispatch
+from app.contexts.processing.domain import JobAttempt
 from app.models.job import FileInfo, Job, JobStatus, Progress
 from app.models.persistent_job import PersistentJob
 from app.models.schema import FieldDefinition
@@ -38,6 +39,7 @@ class JobRepository:
         snapshot = self._snapshot(job)
         with self._sessions() as db:
             self._save_job_record(db, job, tenant_id, owner_id, snapshot)
+            self._sync_normalized_facts(db, job)
             db.add_all(audit_events)
             if after is not None:
                 after(db)
@@ -82,6 +84,10 @@ class JobRepository:
                     idempotency_key=job.idempotency_key,
                     template_version_id=job.template_version_id,
                     snapshot=snapshot,
+                    # R2 双写（docs/20 §3）：与快照同一事务、同一个 Job 派生，
+                    # 两者不一致就是当场可发现的 bug，而不是日后对账才发现的漂移。
+                    field_definitions=snapshot["fields"],
+                    progress=snapshot["progress"],
                 )
             )
             return
@@ -89,6 +95,37 @@ class JobRepository:
             raise ValueError("任务租户归属不可变更")
         record.status = job.status.value
         record.snapshot = snapshot
+        record.progress = snapshot["progress"]
+        if record.field_definitions is None:
+            # 字段定义创建后不可变；已有值就不动，让 R4 的对账去发现"快照与列不一致"这种脏数据。
+            record.field_definitions = snapshot["fields"]
+
+    @staticmethod
+    def _sync_normalized_facts(db, job: Job) -> None:
+        """把逐文件解析事实与当次尝试的告警镜像到规范化源（R2）。
+
+        按 `storage_key` 定位版本行：纯内存任务（没有落库版本）时更新 0 行，不是错误。
+        """
+        for info in job.files:
+            if not info.storage_key:
+                continue
+            db.execute(
+                update(DocumentVersion)
+                .where(DocumentVersion.storage_key == info.storage_key)
+                .values(
+                    page_count=info.page_count,
+                    text_chars=info.chars,
+                    ocr_applied=info.ocr_applied,
+                    parse_error=(info.error or None) and info.error[:300],
+                )
+            )
+        attempt = db.scalar(
+            select(JobAttempt).where(
+                JobAttempt.job_id == job.id, JobAttempt.attempt_no == job.attempt_count
+            )
+        )
+        if attempt is not None:
+            attempt.warnings = list(job.warnings)
 
     def save_with_documents(
         self,
@@ -134,6 +171,9 @@ class JobRepository:
                 )
             for spec in events:
                 outbox.record(db, **spec)
+            # 版本行是本次事务里新加的，必须在 add 之后再镜像逐文件事实，否则按 storage_key
+            # 更新只会命中 0 行（autoflush 发生在 update 之前，但 add_all 必须已经排进会话）。
+            self._sync_normalized_facts(db, job)
             db.commit()
 
     def get(self, job_id: str, tenant_id: str) -> Job | None:

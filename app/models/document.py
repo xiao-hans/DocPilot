@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -76,6 +77,12 @@ class DocumentVersion(Base):
     checksum: Mapped[str] = mapped_column(String(64), nullable=False)
     media_type: Mapped[str] = mapped_column(String(64), nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 快照退役 R1（docs/20 §2）：这四列本来就是"这一版解析出来的结果"，
+    # 过去只活在 processing_jobs.snapshot 的 files[] 里，按文件查一次解析统计就得展开 JSON。
+    page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    text_chars: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ocr_applied: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    parse_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     document: Mapped[Document] = relationship(back_populates="versions")
