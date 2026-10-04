@@ -278,7 +278,38 @@ def wait_ready(endpoint: str, readable_key: str, expect_sha256: str, timeout: in
         except Exception as exc:
             last = f"{type(exc).__name__}: {exc}"
         time.sleep(2.0)
-    raise RuntimeError(f"恢复实例在 {timeout} 秒内读不出正确内容的 {readable_key}：{last}")
+    raise RuntimeError(
+        f"恢复实例在 {timeout} 秒内读不出正确内容的 {readable_key}：{last}"
+        f"｜失败时分层读数：{_failure_probe(probe, readable_key)}"
+    )
+
+
+def _failure_probe(client_at_restore, key: str) -> str:
+    """超时那一刻分层取数，把"备份不完整 / 索引找不到 / 只坏在大响应"分开。
+
+    没有这段之前，两次失败都只留下一句 IncompleteRead，谁也分不清该查复制还是查恢复。
+    """
+    facts: list[str] = []
+    try:
+        head = client_at_restore.head_object(Bucket=BUCKET, Key=key)
+        facts.append(f"HEAD 报告 {head['ContentLength']} 字节")
+    except Exception as exc:
+        facts.append(f"HEAD 失败 {type(exc).__name__}")
+    try:
+        part = client_at_restore.get_object(Bucket=BUCKET, Key=key, Range="bytes=0-1023")
+        facts.append(f"范围读 1 KB 得到 {len(part['Body'].read())} 字节")
+    except Exception as exc:
+        facts.append(f"范围读失败 {type(exc).__name__}")
+    prefix = key.rsplit("/", 1)[0]
+    # 探测对象按体积递增（16 B / 4 KB / 1 MB / 5 MB），逐个读一遍就能看出是不是体积边界。
+    for label, size in (("tiny", 16), ("text", 4096), ("block", 1 << 20)):
+        sibling = f"{prefix}/{label}.bin"
+        try:
+            got = client_at_restore.get_object(Bucket=BUCKET, Key=sibling)["Body"].read()
+            facts.append(f"{label}.bin({size} B) 读到 {len(got)} 字节")
+        except Exception as exc:
+            facts.append(f"{label}.bin({size} B) 失败 {type(exc).__name__}")
+    return "；".join(facts)
 
 
 def start_restore() -> str:
