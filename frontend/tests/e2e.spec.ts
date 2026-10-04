@@ -226,6 +226,60 @@ test.describe('DocAI 端到端', () => {
     expect(picker).not.toBeNull()
   })
 
+  test('运营：平台区块只有计数与代号，本租户区块给原文', async ({ page }) => {
+    await signIn(page)
+    await openView(page, '运营')
+
+    await expect(page.getByRole('heading', { name: '用量与失败' })).toBeVisible()
+    await expect(page.getByTestId('platform-totals')).toContainText(/个租户 · 文档 \d+/)
+    await expect(page.getByTestId('platform-tenant-row').first()).toBeVisible()
+    await expect(page.getByTestId('tenant-usage-summary')).toContainText(/文档 \d+ · 版本 \d+/)
+
+    // 平台区块跨租户，后端只给计数与代号：这里断言它确实没把文件名与错误原文带进来。
+    const platformUsage = page.getByLabel('平台用量').textContent()
+    const platformFailures = page.getByLabel('平台失败分布').textContent()
+    expect(await platformUsage).not.toMatch(/\.pdf/i)
+    expect(await platformFailures).not.toMatch(/\.pdf/i)
+
+    // 失败分布要么有代号行，要么明确说没有失败；两种都算渲染成功，缺渲染才算失败。
+    const hasCodes = await page.getByTestId('platform-failure-code').first().isVisible()
+    if (!hasCodes) {
+      await expect(page.getByText('窗口内没有失败任务')).toBeVisible()
+    }
+
+    await expect(page.getByRole('alert')).toHaveCount(0)
+
+    // 换窗口要真的重取数据，而不是只改下拉框的文字。
+    await page.selectOption('#ops-window', '7')
+    await expect(page.getByTestId('platform-failure-summary')).toBeVisible()
+    await expect(page.getByRole('alert')).toHaveCount(0)
+  })
+
+  test('运营：处理失败的文档在明细里能看到错误原文', async ({ page }) => {
+    await signIn(page)
+
+    // 扩展名合法但内容不是 PDF：上传放行、处理判失败，正是失败明细要呈现的那一类。
+    await fileInput(page).setInputFiles({
+      name: 'broken.pdf',
+      mimeType: 'application/pdf',
+      buffer: Buffer.from('\u0000\u0001\u0002 this is not a pdf at all'),
+    })
+    await submitButton(page).click()
+    await expect(page.getByText('处理失败', { exact: true })).toBeVisible({ timeout: 60_000 })
+
+    await openView(page, '运营')
+    await expect(page.getByTestId('tenant-failure-summary')).toContainText('失败任务 1 条')
+
+    // 明细项给的是任务号、状态、尝试次数、错误代号与原文；文件名不在其中（对象键不含客户
+    // 文件名，这是 G3 定下的形状），所以这里断言"有一行、且原文非空"而不是断言具体措辞。
+    const item = page.getByTestId('tenant-failure-item').first()
+    await expect(item).toBeVisible()
+    await expect(item).toContainText('尝试')
+    await expect(item).toContainText(/未分类错误|无法读取|超时|未提取到结果|无错误信息记录/)
+    const errorLine = item.locator('p').nth(1)
+    await expect(errorLine).not.toHaveText('')
+  })
+
   test('Excel 下载：文件名与内容长度符合预期', async ({ page }) => {
     await signIn(page)
     await startProcessing(page)
