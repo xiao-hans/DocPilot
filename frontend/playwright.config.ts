@@ -11,7 +11,9 @@ export default defineConfig({
   testDir: './tests',
   globalSetup: './tests/global-setup.ts',
   globalTeardown: './tests/global-teardown.ts',
-  timeout: 60_000,
+  // Compose 形态下结果由独立 Worker 产出，整条套件共用一个队列：末位用例会被前面用例
+  // 排队的任务拉长（实测同一用例单跑 13.6 秒、套件末位 >60 秒）。进程内基线仍是 60 秒。
+  timeout: process.env.E2E_COMPOSE === '1' ? 150_000 : 60_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,
   workers: 1,

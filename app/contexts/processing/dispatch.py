@@ -123,6 +123,12 @@ def claim_lease(
 
     可领取的条件是"已发布且无人认领"或"上一个持有者租约已过期"；令牌随机生成，
     因此同一任务的重复消息最多让一个执行者拿到租约。
+
+    `ready` 也必须可领：派发器是"先把消息投出去、拿到 confirm 才写 published"
+    （`Dispatcher.run_once`），所以 Worker 完全可能比那次状态更新更早看到消息。当时
+    只认 `published` 会让这条消息"领不到租约→被确认掉→任务永远没人执行"，G8 的
+    Compose 端到端实测到 Worker 比派发器早 3 毫秒的场景。行本身已经提交且带齐
+    (tenant, job, attempt_no)，条件更新仍是单一胜者，因此放宽不引入重复执行。
     """
     token = uuid.uuid4().hex
     now = _now()
@@ -135,7 +141,7 @@ def claim_lease(
                 JobDispatch.job_id == job_id,
                 JobDispatch.attempt_no == attempt_no,
                 or_(
-                    JobDispatch.status == "published",
+                    JobDispatch.status.in_(("ready", "published")),
                     (JobDispatch.status == "claimed")
                     & (JobDispatch.lease_expires_at < now),
                 ),

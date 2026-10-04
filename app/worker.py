@@ -46,6 +46,8 @@ def handle(payload: Any) -> bool:
     )
     if token is None:
         # 已有执行者持有有效租约，或该派发已有结局：重复投递的正常分支。
+        # 记一条 INFO：这是"消息被确认掉但任务没执行"的唯一现场证据，缺了它就只能靠猜。
+        logger.info("未领到租约，跳过 dispatch_id=%s job_id=%s", dispatch_id, job_id)
         return True
 
     lease = dispatch.Lease(dispatch_id=dispatch_id, token=token)
@@ -54,6 +56,7 @@ def handle(payload: Any) -> bool:
     renewer.start()
     try:
         get_job_manager().process(job_id, lease=lease)
+        logger.info("执行完成 job_id=%s dispatch_id=%s", job_id, dispatch_id)
     except Exception as exc:
         # 失败尝试已由处理链路在同一事务里记录并关闭派发；重投同一条消息不会改变结果。
         logger.exception("执行失败 job_id=%s：%s", job_id, exc)

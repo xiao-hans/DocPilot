@@ -21,6 +21,18 @@ const frontendRoot = path.resolve(testsDir, '..')
 const repoRoot = path.resolve(frontendRoot, '..')
 const VENV_PY = path.join(repoRoot, '.venv', 'Scripts', 'python.exe')
 const VITE_BIN = path.join(frontendRoot, 'node_modules', 'vite', 'bin', 'vite.js')
+const COMPOSE_HELPER = path.join(repoRoot, 'scripts', 'e2e_compose_env.py')
+export const COMPOSE_MODE = process.env.E2E_COMPOSE === '1'
+export const RUN_ID = process.env.E2E_RUN_ID ?? `run-${Date.now().toString(36)}`
+
+interface ComposeEnv {
+  RUN: string
+  DATABASE_URL: string
+  BROKER_URL: string
+  QUEUE_NAME: string
+  STORAGE_BACKEND: string
+  S3_KEY_PREFIX: string
+}
 
 /** 一次性数据目录：`data/` 已在 .gitignore 内，测试产物不进仓库。 */
 export const e2eDataDir = path.join(repoRoot, 'data', 'e2e')
@@ -61,6 +73,59 @@ async function waitAlive(url: string, timeoutMs: number): Promise<boolean> {
     await new Promise((r) => setTimeout(r, 500))
   }
   return alive(url)
+}
+
+/**
+ * Compose 形态的环境准备交给 Python 侧脚本：它负责依赖健康检查、按精确名字重建一次性
+ * PostgreSQL 库、显式跑一次迁移，并划出本次运行的队列名与对象前缀。
+ */
+function prepareComposeEnv(): ComposeEnv {
+  const res = spawnSync(VENV_PY, ['-X', 'utf8', COMPOSE_HELPER, 'prepare', '--run', RUN_ID], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  })
+  if (res.status !== 0) {
+    throw new Error(`Compose 端到端环境准备失败：\n${res.stdout}\n${res.stderr}`)
+  }
+  const line = res.stdout.trim().split(/\r?\n/).filter(Boolean).pop() ?? ''
+  try {
+    return JSON.parse(line) as ComposeEnv
+  } catch {
+    throw new Error(`无法解析 prepare 输出：${line}`)
+  }
+}
+
+/**
+ * 队列形态的就绪门槛：`/readyz` 必须确认"队列已启用且至少有 1 个消费者"。
+ *
+ * 只看 `/healthz` 或 `/readyz` 返回 200 不够——没有积压时 0 个消费者也算就绪（G-DEC-09 的
+ * 口径），那样的话用例会在一个没人消费的队列上等结果。这里显式要求 consumers >= 1，
+ * 否则派发器和 Worker 有一边没起来就会在这里失败，而不是让用例随机超时。
+ */
+async function waitQueueReady(timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  let last = '未尝试'
+  while (Date.now() < deadline) {
+    try {
+      const ctrl = new AbortController()
+      const t = setTimeout(() => ctrl.abort(), 3000)
+      const res = await fetch(`${BACKEND_ORIGIN}/readyz`, { signal: ctrl.signal })
+      clearTimeout(t)
+      const body = (await res.json()) as {
+        queue?: { enabled?: boolean; consumers?: number | null; pending?: number; stuck?: boolean }
+      }
+      const q = body.queue
+      if (res.status === 200 && q?.enabled === true && typeof q.consumers === 'number' && q.consumers >= 1) {
+        process.stdout.write(`[setup] readyz：consumers=${q.consumers} pending=${q.pending ?? 0}\n`)
+        return
+      }
+      last = `status=${res.status} queue=${JSON.stringify(q)}`
+    } catch (e) {
+      last = String(e)
+    }
+    await new Promise((r) => setTimeout(r, 1000))
+  }
+  throw new Error(`/readyz 未在 ${timeoutMs}ms 内确认"队列启用且有消费者"：${last}`)
 }
 
 function startServer(
@@ -116,6 +181,15 @@ function generateFixtures(): void {
 
 export default async function globalSetup(): Promise<void> {
   generateFixtures()
+  const compose = COMPOSE_MODE ? prepareComposeEnv() : null
+  if (compose) {
+    process.stdout.write(
+      `[setup] compose mode：run=${compose.RUN} queue=${compose.QUEUE_NAME} prefix=${compose.S3_KEY_PREFIX}\n`,
+    )
+    // 结果由独立 Worker 产出，进程内基线的 30 秒窗口不够；用例 worker 在 setup 之后启动，
+    // 因此这里改 process.env 能传到 helpers.waitForSuccess。
+    process.env.E2E_SUCCESS_TIMEOUT_MS = process.env.E2E_SUCCESS_TIMEOUT_MS ?? '120000'
+  }
 
   // 每次运行都从空目录开始：库、上传对象与导出文件都是本次用例自己的，跑完即弃。
   rmSync(e2eDataDir, { recursive: true, force: true })
@@ -149,9 +223,19 @@ export default async function globalSetup(): Promise<void> {
       EXTRACTOR_MODE: 'mock',
       BOOTSTRAP_TOKEN,
       // 队列保持关闭：端到端跑的是"上传即处理完"的进程内基线，起 Worker 属于另一条链路。
-      BROKER_URL: '',
-      STORAGE_BACKEND: 'local',
-      DATABASE_URL: `sqlite:///${posixDataDir}/e2e.sqlite3`,
+      ...(compose
+        ? {
+            BROKER_URL: compose.BROKER_URL,
+            QUEUE_NAME: compose.QUEUE_NAME,
+            STORAGE_BACKEND: 's3',
+            S3_KEY_PREFIX: compose.S3_KEY_PREFIX,
+            DATABASE_URL: compose.DATABASE_URL,
+          }
+        : {
+            BROKER_URL: '',
+            STORAGE_BACKEND: 'local',
+            DATABASE_URL: `sqlite:///${posixDataDir}/e2e.sqlite3`,
+          }),
       DATA_DIR: posixDataDir,
       UPLOAD_DIR: `${posixDataDir}/uploads`,
       OUTPUT_DIR: `${posixDataDir}/outputs`,
@@ -162,6 +246,40 @@ export default async function globalSetup(): Promise<void> {
     throw new Error(`backend failed to start; log tail:\n${logTail(path.join(tmpDir, 'backend.log'))}`)
   }
   process.stdout.write(`[setup] backend started pid=${backendPid} at ${BACKEND_ORIGIN}\n`)
+
+  if (compose) {
+    // 派发器与 Worker 是独立进程：它们必须看到与 API 同一套队列/存储配置，否则任务停在 queued。
+    const queueEnv: Record<string, string> = {
+      APP_ENV: 'development',
+      EXTRACTOR_MODE: 'mock',
+      BROKER_URL: compose.BROKER_URL,
+      QUEUE_NAME: compose.QUEUE_NAME,
+      DATABASE_URL: compose.DATABASE_URL,
+      STORAGE_BACKEND: 's3',
+      S3_KEY_PREFIX: compose.S3_KEY_PREFIX,
+      DATA_DIR: posixDataDir,
+      UPLOAD_DIR: `${posixDataDir}/uploads`,
+      OUTPUT_DIR: `${posixDataDir}/outputs`,
+    }
+    const dispatcherPid = await startServer(
+      [VENV_PY, '-m', 'app.dispatcher'],
+      repoRoot,
+      'dispatcher',
+      'dispatcher.log',
+      queueEnv,
+    )
+    started.push({ pid: dispatcherPid, role: 'dispatcher', log: path.join(tmpDir, 'dispatcher.log') })
+    const workerPid = await startServer(
+      [VENV_PY, '-m', 'app.worker'],
+      repoRoot,
+      'worker',
+      'worker.log',
+      queueEnv,
+    )
+    started.push({ pid: workerPid, role: 'worker', log: path.join(tmpDir, 'worker.log') })
+    process.stdout.write(`[setup] dispatcher pid=${dispatcherPid} worker pid=${workerPid}\n`)
+    await waitQueueReady(90_000)
+  }
 
   const frontendPid = await startServer(
     [process.execPath, VITE_BIN, '--port', '5173', '--strictPort'],
@@ -176,7 +294,7 @@ export default async function globalSetup(): Promise<void> {
   }
   process.stdout.write(`[setup] frontend started pid=${frontendPid}\n`)
 
-  writeFileSync(SERVERS_FILE, JSON.stringify({ started }))
+  writeFileSync(SERVERS_FILE, JSON.stringify({ started, compose: COMPOSE_MODE, run: RUN_ID }))
 
   // 首个页面加载会触发 Vite 预构建，先预热一次，避免第一条用例把编译时间算进断言超时。
   const warm = await fetch(`${FRONTEND_ORIGIN}/`)

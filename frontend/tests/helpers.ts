@@ -83,7 +83,11 @@ export async function startProcessing(page: Page, fixture: string = invoicePdf):
 
 /** 等最终结果幕（轮询驱动，含成功后的短暂停留；30s 覆盖 60 次轮询的余地）。 */
 export async function waitForSuccess(page: Page): Promise<void> {
-  await expect(page.getByText('处理成功', { exact: true })).toBeVisible({ timeout: 30_000 })
+  // 队列形态下结果由独立 Worker 产出（派发轮询 + 领取租约 + 执行 + 回写），比进程内基线慢，
+  // 30 秒会让用例在环境正确时也随机失败。默认仍是 30 秒，Compose 形态由 setup 抬高。
+  await expect(page.getByText('处理成功', { exact: true })).toBeVisible({
+    timeout: Number(process.env.E2E_SUCCESS_TIMEOUT_MS ?? 30_000),
+  })
 }
 
 export async function computedStyle(page: Page, locator: Locator, prop: string): Promise<string> {

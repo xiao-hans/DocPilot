@@ -153,6 +153,31 @@ def test_dispatcher_publishes_only_with_confirm(
     assert "\\" not in dumped and "/" not in dumped
 
 
+def test_worker_beating_publish_confirmation_still_executes(
+    owner_workspace: dict, sandbox: Path, make_invoice_pdf, queue_mode
+) -> None:
+    """Worker 比派发器的状态确认更早看到消息时，任务仍必须被执行。
+
+    派发器是"先投消息、拿到 confirm 才写 published"，所以这个窗口真实存在：G8 把端到端
+    搬到 Compose 形态后第一次抓到它——Worker 比 mark_published 早 3 毫秒领租约，领不到就
+    把消息确认掉，任务停在 queued 直到 300 秒的重投窗口。回归点因此是"ready 状态可领租约"。
+    """
+
+    class ImmediateDelivery(RecordingTransport):
+        def publish(self, payload: dict) -> None:
+            super().publish(payload)
+            # 同一条消息在派发器写下 published 之前就被取走并处理。
+            assert handle(payload) is True
+
+    job_id = _submit(owner_workspace, make_invoice_pdf, sandbox)
+    counters = Dispatcher(ImmediateDelivery()).run_once()
+
+    assert _job_status(job_id) == JobStatus.SUCCEEDED.value
+    # 行被 Worker 抢先领走，mark_published 不再命中：这是预期分支，不是丢任务。
+    assert counters == {"published": 0, "failed": 0, "skipped": 1, "republished": 0}
+    assert _status_of(_payload_for(job_id)["dispatch_id"]) != "ready"
+
+
 def test_publish_failure_keeps_row_ready(
     owner_workspace: dict, sandbox: Path, make_invoice_pdf, queue_mode
 ) -> None:
