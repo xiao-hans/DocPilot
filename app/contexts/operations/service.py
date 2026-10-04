@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -11,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app import config
 from app.contexts.automation.domain import EventRule, RuleRun
 from app.contexts.processing.domain import JobAttempt
 from app.contexts.review.domain import ExtractionResult, ResultRevision
@@ -241,15 +243,49 @@ def platform_usage(
     }
 
 
+def storage_health() -> dict[str, Any]:
+    """/readyz 的对象存储段（R-018 的探针侧）。
+
+    口径与队列段一致：不声明的东西不参与判定。`STORAGE_BACKEND=local` 时文件就在本机
+    目录里，没有外部依赖可问，段里只写 `checked: false`；声明走 s3 就必须真能列出对象，
+    列不出就是故障——此时上传与下载都会失败，不能只让数据库健康把服务标成 ready。
+    """
+    from app.services.object_storage import get_object_storage
+
+    backend = config.STORAGE_BACKEND
+    if backend != "s3":
+        return {"enabled": False, "backend": backend, "checked": False}
+    try:
+        sample = next(itertools.islice(get_object_storage().list_keys(""), 1), None)
+    except Exception as exc:  # 探针自身不许把 /readyz 变成 500
+        return {
+            "enabled": True,
+            "backend": "s3",
+            "bucket": config.S3_BUCKET,
+            "reachable": False,
+            "checked": True,
+            "error": type(exc).__name__,
+        }
+    return {
+        "enabled": True,
+        "backend": "s3",
+        "bucket": config.S3_BUCKET,
+        "reachable": True,
+        "checked": True,
+        "listed_sample": sample is not None,
+    }
+
+
 def readiness(
     session_factory,
     head_revision: str,
     queue_probe: Callable[[], dict[str, Any]] | None = None,
+    storage_probe: Callable[[], dict[str, Any]] | None = None,
 ) -> tuple[int, dict[str, Any]]:
-    """就绪判定：数据库不可用、迁移未对齐或队列卡住都返回 503，但绝不抛异常。
+    """就绪判定：数据库不可用、迁移未对齐、队列卡住或对象存储不可达都返回 503，但绝不抛异常。
 
-    `queue_probe` 默认取处理上下文的队列状态；测试里换成假探针，才能把
-    "有积压没消费者"与"broker 问不到"两种故障分别钉住。
+    `queue_probe` / `storage_probe` 默认取各自上下文的真实探针；测试里换成假探针，才能把
+    "有积压没消费者"、"桶问不到"和"broker 不可达"几种故障分别钉住。
     """
     database_ok = False
     current: str | None = None
@@ -272,13 +308,21 @@ def readiness(
         queue = {"enabled": True, "consumers": None, "pending": None, "stuck": True}
         error = error or f"queue_probe:{type(exc).__name__}"
     queue_stuck = bool(queue.get("enabled") and queue.get("stuck"))
-    ready = in_sync and not queue_stuck
+    if storage_probe is None:
+        storage_probe = storage_health
+    try:
+        storage = storage_probe()
+    except Exception as exc:  # 同队列段：探针不能自己变成 500 的来源
+        storage = {"enabled": True, "reachable": False, "error": f"storage_probe:{type(exc).__name__}"}
+    storage_down = bool(storage.get("enabled") and storage.get("reachable") is False)
+    ready = in_sync and not queue_stuck and not storage_down
     status = "ready" if ready else "unavailable"
     body = {
         "status": status,
         "database": database_ok,
         "migration": {"current": current, "head": head_revision, "in_sync": in_sync},
         "queue": queue,
+        "storage": storage,
     }
     if error is not None:
         body["error"] = error

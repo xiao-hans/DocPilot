@@ -66,6 +66,80 @@ def test_readiness_degrades_without_raising(
     assert str(sandbox) not in response.text
 
 
+def test_readyz_storage_segment_follows_backend(owner_workspace: dict, monkeypatch) -> None:
+    """TC-OPS-002：对象存储进就绪判定，但只在真的声明走 s3 时才参与。
+
+    local 后端没有外部依赖可问，声明 s3 就必须真能列出对象——否则上传/下载都会失败，
+    不能只因为数据库健康就把服务标成 ready。
+    """
+    from app import config
+    from app.contexts.operations import service as operations_service
+
+    # 判据必须只由存储段决定：迁移不同步本身就会 503，所以这里传库里的真实 head。
+    from sqlalchemy import text
+
+    with SessionLocal() as db:
+        head = db.scalar(text("SELECT version_num FROM alembic_version"))
+    assert head, "测试库没登记 alembic 版本，503 的来源会分不清"
+
+    monkeypatch.setattr(config, "STORAGE_BACKEND", "local", raising=False)
+    code, body = operations_service.readiness(SessionLocal, head, storage_probe=lambda: {
+        "enabled": False, "backend": "local", "checked": False
+    })
+    assert code == 200 and body["storage"]["checked"] is False
+
+    code, body = operations_service.readiness(SessionLocal, head, storage_probe=lambda: {
+        "enabled": True, "backend": "s3", "bucket": "docpilot", "reachable": True, "checked": True
+    })
+    assert code == 200 and body["storage"]["reachable"] is True
+
+    # 负向：桶问不到就必须是 503，且原因写在段里而不是靠 error 字段猜
+    code, body = operations_service.readiness(SessionLocal, head, storage_probe=lambda: {
+        "enabled": True, "backend": "s3", "reachable": False, "error": "EndpointConnectionError"
+    })
+    assert code == 503 and body["status"] == "unavailable"
+    assert body["storage"]["error"] == "EndpointConnectionError"
+
+    # 负向：探针自己炸了也不能变成 500
+    def explode() -> dict:
+        raise RuntimeError("探针内部故障")
+
+    code, body = operations_service.readiness(SessionLocal, head, storage_probe=explode)
+    assert code == 503 and "storage_probe" in body["storage"]["error"]
+
+
+def test_storage_health_reads_config_shape(owner_workspace: dict, monkeypatch) -> None:
+    """`storage_health()` 本身的正反向：local 不去问，s3 问不到就报类名。"""
+    from app import config
+    from app.contexts.operations import service as operations_service
+
+    monkeypatch.setattr(config, "STORAGE_BACKEND", "local", raising=False)
+    assert operations_service.storage_health() == {
+        "enabled": False, "backend": "local", "checked": False
+    }
+
+    monkeypatch.setattr(config, "STORAGE_BACKEND", "s3", raising=False)
+    monkeypatch.setattr(config, "S3_BUCKET", "docpilot", raising=False)
+
+    class Listing:
+        def list_keys(self, prefix: str = ""):
+            yield "some/key.pdf"
+
+    import app.services.object_storage as object_storage
+
+    monkeypatch.setattr(object_storage, "get_object_storage", lambda: Listing())
+    health = operations_service.storage_health()
+    assert health["reachable"] is True and health["listed_sample"] is True
+
+    class Broken:
+        def list_keys(self, prefix: str = ""):
+            raise object_storage.StorageError("桶不可达")
+
+    monkeypatch.setattr(object_storage, "get_object_storage", lambda: Broken())
+    health = operations_service.storage_health()
+    assert health["reachable"] is False and health["error"] == "StorageError"
+
+
 def test_tenant_usage_matches_stored_facts(
     owner_workspace: dict, sandbox: Path, make_invoice_pdf
 ) -> None:
