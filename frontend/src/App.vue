@@ -16,28 +16,43 @@ import TemplatesPanel from './components/TemplatesPanel.vue'
 import TeamPanel from './components/TeamPanel.vue'
 import AutomationPanel from './components/AutomationPanel.vue'
 import OperationsPanel from './components/OperationsPanel.vue'
+import QuotaPanel from './components/QuotaPanel.vue'
 import AuthGate from './components/AuthGate.vue'
 import { INVOICE_FIELDS, type FieldDefinition, type ResultRow } from './api/client'
 import { useJobPolling } from './composables/useJobPolling'
 
 type Scene = 'upload' | 'processing' | 'result'
-type View = 'process' | 'review' | 'library' | 'templates' | 'team' | 'automation' | 'operations'
+type View =
+  | 'process'
+  | 'review'
+  | 'library'
+  | 'templates'
+  | 'team'
+  | 'automation'
+  | 'quota'
+  | 'operations'
 
 const view = ref<View>('process')
-const VIEWS: { value: View; label: string; platformOnly?: boolean }[] = [
+const VIEWS: { value: View; label: string; platformOnly?: boolean; adminOnly?: boolean }[] = [
   { value: 'process', label: '处理' },
   { value: 'review', label: '复核' },
   { value: 'library', label: '文档库' },
   { value: 'templates', label: '模板' },
   { value: 'team', label: '团队' },
   { value: 'automation', label: '自动化' },
+  // 配额是租户自己的设置，写权限在后端 require_roles 上把关；
+  // 这里按角色藏入口，是为了不让 member 看见一个点进去只能报错的按钮。
+  { value: 'quota', label: '配额', adminOnly: true },
   // 运营视图的主体是跨租户数据，入口只给平台身份看；真正的把关在后端
   // `require_platform_admin`（非平台身份请求拿到 403），这里藏入口不是权限控制。
   { value: 'operations', label: '运营', platformOnly: true },
 ]
 
-function visibleViews(isPlatformAdmin: boolean) {
-  return VIEWS.filter((item) => !item.platformOnly || isPlatformAdmin)
+function visibleViews(isPlatformAdmin: boolean, role: string) {
+  const canManage = role === 'owner' || role === 'admin'
+  return VIEWS.filter(
+    (item) => (!item.platformOnly || isPlatformAdmin) && (!item.adminOnly || canManage),
+  )
 }
 const scene = ref<Scene>('upload')
 const jobId = ref('')
@@ -103,7 +118,7 @@ watch(
         <BrandMark />
         <nav class="ml-6 hidden items-center gap-1 sm:flex" aria-label="工作区">
           <button
-            v-for="item in visibleViews(user.is_platform_admin)"
+            v-for="item in visibleViews(user.is_platform_admin, tenant.role)"
             :key="item.value"
             class="rounded-control px-3 py-2 text-xs transition-colors"
             :class="view === item.value ? 'bg-surface-2 text-primary' : 'text-secondary hover:text-primary'"
@@ -135,7 +150,7 @@ watch(
       </div>
       <nav class="flex items-center gap-1 border-t border-edge px-4 py-2 sm:hidden" aria-label="工作区（窄屏）">
         <button
-          v-for="item in visibleViews(user.is_platform_admin)"
+          v-for="item in visibleViews(user.is_platform_admin, tenant.role)"
           :key="`mobile-${item.value}`"
           class="rounded-control px-3 py-1.5 text-xs transition-colors"
           :class="view === item.value ? 'bg-surface-2 text-primary' : 'text-secondary'"
@@ -154,6 +169,7 @@ watch(
       <TemplatesPanel v-else-if="view === 'templates'" :role="tenant.role" />
       <TeamPanel v-else-if="view === 'team'" :role="tenant.role" />
       <AutomationPanel v-else-if="view === 'automation'" :role="tenant.role" />
+      <QuotaPanel v-else-if="view === 'quota'" :role="tenant.role" />
       <OperationsPanel v-else :platform-admin="user.is_platform_admin" />
     </main>
 
