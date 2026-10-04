@@ -29,11 +29,15 @@ pytestmark = pytest.mark.s3
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 
-if not (S3_ENDPOINT_URL and S3_BUCKET):
-    pytest.skip(
-        "未设置 S3_ENDPOINT_URL / S3_BUCKET：真实 S3 用例未执行（覆盖缺口，不算通过）",
-        allow_module_level=True,
-    )
+@pytest.fixture(autouse=True)
+def require_real_object_store() -> None:
+    """缺端点时在"用例已被选中之后"才跳过。
+
+    与 `test_queue_broker.py` 同一个理由：模块级 skip 发生在收集期，`-m "not s3"` 还没筛掉
+    本模块就已经记了一条 skipped，把"跳过不等于通过"的账目弄脏。
+    """
+    if not (S3_ENDPOINT_URL and S3_BUCKET):
+        pytest.skip("未设置 S3_ENDPOINT_URL / S3_BUCKET：真实 S3 用例未执行（覆盖缺口，不算通过）")
 
 
 def _load_script(name: str):

@@ -33,11 +33,16 @@ pytestmark = pytest.mark.broker
 
 FIELDS = json.dumps(INVOICE_TEMPLATE)
 
-if not BROKER_URL:
-    pytest.skip(
-        "未设置 BROKER_URL：真实 broker 用例未执行（覆盖缺口，不算通过）",
-        allow_module_level=True,
-    )
+@pytest.fixture(autouse=True)
+def require_real_broker() -> None:
+    """缺依赖时在"用例已被选中之后"才跳过。
+
+    原先是模块级 `pytest.skip(allow_module_level=True)`，那发生在收集期，`-m "not broker"`
+    还没来得及筛掉本模块，于是基础门禁那一轮会白记一条 skipped——把"跳过不等于通过"这本账
+    弄脏（跑 PG/SQLite 全量的人会问"这条 skip 是什么缺口"，而它根本不是那轮的活儿）。
+    """
+    if not BROKER_URL:
+        pytest.skip("未设置 BROKER_URL：真实 broker 用例未执行（覆盖缺口，不算通过）")
 
 
 @pytest.fixture()
