@@ -151,7 +151,11 @@ def test_job_listing_is_scoped_filtered_and_path_free(
 def test_pre_normalized_jobs_still_read_from_snapshot(
     owner_workspace: dict, sandbox: Path, make_invoice_pdf
 ) -> None:
-    """TC-FUNC-030：没有规范化结果的历史任务仍按快照读取，新端点返回空而非报错。"""
+    """TC-FUNC-030（R5 后口径）：没有规范化结果的任务读出来就是"没有结果"，不报错也不编。
+
+    旧口径是回落到快照里的 `result`；R5 之后快照不再被任何读路径引用，所以这里断言的是
+    "端点仍 200、结果为空、导出仍可用"，而不是"仍能显示机器值"。
+    """
     from app.contexts.review.domain import ExtractionResult
     from app.models.persistent_job import PersistentJob
 
@@ -165,7 +169,7 @@ def test_pre_normalized_jobs_still_read_from_snapshot(
     assert owner_workspace["client"].get(f"{base}/results?job_id={job_id}").json() == {"results": []}
     legacy = owner_workspace["client"].get(f"{base}/jobs/{job_id}/result").json()
     assert legacy["status"] == "succeeded"
-    assert legacy["result"][0]["values"]["发票号码"]
+    assert legacy["result"] is None, "规范化结果为空时不再从快照编出值来"
     assert owner_workspace["client"].get(f"{base}/jobs/{job_id}/export?format=csv").status_code == 200
 
 

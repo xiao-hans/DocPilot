@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.config import (
@@ -20,6 +20,7 @@ from app.config import (
 from app.contexts.processing import dispatch
 from app.contexts.processing.domain import JobAttempt
 from app.db import SessionLocal
+from app.models.document import DocumentVersion
 from app.models.persistent_job import PersistentJob
 from app.services import outbox
 from app.services.timestamps import iso_utc
@@ -214,6 +215,25 @@ def finish_attempt(
     return True
 
 
+def _completed_terminal(db, job: PersistentJob, attempt: JobAttempt | None) -> str | None:
+    """崩溃在"结果已写、状态列未推进"之间时，用规范化事实判定它本该是哪个终态。
+
+    判据与 pipeline 汇总状态同源：`progress` 列走到 `done` 说明这一轮真的跑完了；
+    有解析失败的文件即 `partial`，尝试带错误即 `failed`。R3 回填之前的历史行
+    `progress` 为空，这里判定不出来，仍按超时回收处理——那是 §4 允许的保守分支。
+    """
+    if job.progress != "done" or attempt is None or attempt.status == "running":
+        return None
+    if attempt.error:
+        return "failed"
+    broken = db.scalar(
+        select(func.count())
+        .select_from(DocumentVersion)
+        .where(DocumentVersion.job_id == job.id, DocumentVersion.parse_error.is_not(None))
+    )
+    return "partial" if broken else "succeeded"
+
+
 def reclaim_timeouts(db: Session) -> dict[str, list[str]]:
     """收敛所有卡在 processing 的任务，是唯一的恢复入口（DOC-DD-004 §7.3）。
 
@@ -235,11 +255,10 @@ def reclaim_timeouts(db: Session) -> dict[str, list[str]]:
             .order_by(JobAttempt.attempt_no.desc())
             .limit(1)
         )
-        snapshot_status = str((job.snapshot or {}).get("status") or "")
-
         if attempt is None or attempt.status != "running":
-            if snapshot_status in TERMINAL_STATUSES:
-                _transition(db, job, snapshot_status)
+            terminal = _completed_terminal(db, job, attempt)
+            if terminal is not None:
+                _transition(db, job, terminal)
                 outcome["converged"].append(job.id)
                 continue
         elif _as_utc(attempt.started_at) > cutoff:
@@ -270,9 +289,9 @@ def reclaim_timeouts(db: Session) -> dict[str, list[str]]:
                 },
             )
         else:
-            snapshot = dict(job.snapshot or {})
-            snapshot.update({"status": "failed", "progress": "done", "error": "尝试超时且已达上限"})
-            job.snapshot = snapshot
+            if attempt is not None:
+                attempt.error = "尝试超时且已达上限"
+            job.progress = "done"
             _transition(db, job, "failed")
             outcome["failed"].append(job.id)
             dispatch.close_open_for_job(db, job_id=job.id, tenant_id=job.tenant_id)
@@ -335,8 +354,6 @@ def list_jobs(
     offset: int = 0,
 ) -> dict[str, Any]:
     """租户内任务列表：分页 + 状态/模板过滤，响应不含存储路径。"""
-    from sqlalchemy import func
-
     stmt = select(PersistentJob).where(PersistentJob.tenant_id == tenant_id)
     if status and status != "all":
         stmt = stmt.where(PersistentJob.status == status)
@@ -348,6 +365,18 @@ def list_jobs(
         .limit(max(1, min(limit, 100)))
         .offset(max(0, offset))
     ).all()
+    job_ids = [row.id for row in rows]
+    file_counts = (
+        dict(
+            db.execute(
+                select(DocumentVersion.job_id, func.count())
+                .where(DocumentVersion.job_id.in_(job_ids))
+                .group_by(DocumentVersion.job_id)
+            ).all()
+        )
+        if job_ids
+        else {}
+    )
     return {
         "total": total,
         "jobs": [
@@ -356,7 +385,7 @@ def list_jobs(
                 "status": row.status,
                 "template_version_id": row.template_version_id,
                 "attempt_count": row.attempt_count,
-                "file_count": len((row.snapshot or {}).get("files") or []),
+                "file_count": file_counts.get(row.id, 0),
                 "created_at": row.created_at.timestamp(),
                 "finished_at": row.finished_at.timestamp() if row.finished_at else None,
             }

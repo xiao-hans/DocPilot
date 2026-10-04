@@ -525,8 +525,8 @@ def test_result_write_failure_leaves_no_snapshot_without_result(
         results = db.query(ExtractionResult).filter(ExtractionResult.job_id == job_id).all()
         attempts = db.query(JobAttempt).filter(JobAttempt.job_id == job_id).all()
 
-    # 快照里的每一行都必须有对应的规范化结果，二者共享同一事务。
-    assert [row["file"] for row in snapshot["result"]] == [row.filename for row in results]
+    # R5 之后快照根本不带 result：这条不变量从"两边必须一致"升级为"只有一边有值"。
+    assert "result" not in snapshot, "快照不再承载提取结果，双真相少了一处"
     assert len(results) == 1
     assert results[0].state == "machine"
     assert attempts and attempts[0].status in ("succeeded", "failed")

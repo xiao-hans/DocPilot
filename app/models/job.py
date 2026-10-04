@@ -51,7 +51,6 @@ class Job:
   result: list[dict] | None = None  # [{file, values: {字段: 值}}]
   warnings: list[str] = dc_field(default_factory=list)
   error: str | None = None
-  excel_path: str | None = None
   tenant_id: str | None = None
   owner_id: str | None = None
   template_version_id: str | None = None

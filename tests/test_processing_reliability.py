@@ -18,10 +18,11 @@ from app.contexts.processing.domain import JobAttempt
 from app.db import SessionLocal
 from app.main import app
 from app.models.access import AuditEvent
-from app.models.document import DocumentVersion
-from app.models.job import Job, JobStatus
+from app.models.document import Document, DocumentVersion
+from app.models.job import FileInfo, Job, JobStatus
 from app.models.outbox import DomainEventRecord
 from app.models.persistent_job import PersistentJob
+from app.models.schema import FieldDefinition
 from app.models.schema import INVOICE_TEMPLATE
 from app.services import outbox
 from app.services.job_manager import get_job_manager
@@ -173,7 +174,12 @@ def test_timeout_reclaim_respects_attempt_limit(sandbox: Path) -> None:
         record = db.get(PersistentJob, job2.id)
         assert record.status == "failed"
         assert record.finished_at is not None
-        assert record.snapshot["error"] == "尝试超时且已达上限"
+        attempt = db.scalar(
+            select(JobAttempt)
+            .where(JobAttempt.job_id == job2.id)
+            .order_by(JobAttempt.attempt_no.desc())
+        )
+        assert attempt.error == "尝试超时且已达上限", "错误原因归尝试行，不再写进快照"
 
 
 def test_terminal_job_is_never_requeued_by_reclaim(sandbox: Path) -> None:
@@ -293,13 +299,41 @@ def _seed_processing_job(attempt_count: int, status: str = "processing") -> Job:
     with SessionLocal() as db:
         job = Job(
             id=JOB_ID,
-            fields=[],
+            fields=[FieldDefinition(name="发票号码", type="text", description="20 位发票号码")],
             created_at=now.timestamp(),
+            files=[FileInfo(name="invoice.pdf", storage_key=f"{TENANT_ID}/{JOB_ID}/invoice.pdf")],
             status=JobStatus(status),
             tenant_id=TENANT_ID,
             attempt_count=attempt_count,
         )
         JobRepository().save(job, TENANT_ID, None)
+        # R5 之后读路径只认规范化源：这里补一行版本记录，等价于上传链路本来会留下的事实。
+        if db.scalar(select(DocumentVersion.id).where(DocumentVersion.job_id == JOB_ID)) is not None:
+            return job  # 同一个 JOB_ID 被复用过，事实已经在库里
+        document_id = "d" + "0" * 31
+        db.add(
+            Document(
+                id=document_id,
+                tenant_id=TENANT_ID,
+                created_at=now,
+            )
+        )
+        db.add(
+            DocumentVersion(
+                id="v" + "0" * 31,
+                document_id=document_id,
+                tenant_id=TENANT_ID,
+                job_id=JOB_ID,
+                revision=1,
+                original_filename="invoice.pdf",
+                storage_key=job.files[0].storage_key,
+                checksum="0" * 64,
+                media_type="application/pdf",
+                size_bytes=1024,
+                created_at=now,
+            )
+        )
+        db.commit()
     return job
 
 
@@ -335,6 +369,7 @@ def _add_finished_attempt(job_id: str, *, status: str, snapshot_status: str) -> 
         snapshot = dict(record.snapshot or {})
         snapshot.update({"status": snapshot_status, "progress": "done"})
         record.snapshot = snapshot
+        record.progress = "done"  # R2 的双写在生产里与快照同事务，这里跟着一起补
         db.commit()
     assert attempt is None
 

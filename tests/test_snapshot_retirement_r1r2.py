@@ -94,7 +94,6 @@ def test_r2_warnings_land_on_the_attempt_that_produced_them(owner_workspace):
         result=None,
         warnings=["第 2 页文本层缺失，已走 OCR"],
         error=None,
-        excel_path=None,
         tenant_id=owner_workspace["tenant_id"],
         owner_id=owner_workspace["user_id"],
         attempt_count=1,
@@ -225,8 +224,7 @@ def test_r2_warnings_attribute_to_the_attempt_that_ran(owner_workspace):
             result=None,
             warnings=warnings,
             error=None,
-            excel_path=None,
-            tenant_id=owner_workspace["tenant_id"],
+                tenant_id=owner_workspace["tenant_id"],
             owner_id=owner_workspace["user_id"],
             attempt_count=attempt_count,
         )
@@ -260,20 +258,22 @@ def test_r2_warnings_attribute_to_the_attempt_that_ran(owner_workspace):
     assert attempts == {1: ["第一次的告警"], 2: ["第二次的告警"]}
 
 
-def test_r2_progress_moves_with_status_in_the_same_transaction(owner_workspace, make_invoice_pdf):
-    """status 与 progress 不可分开更新：分开了就会进度说出状态没承认的话。"""
+def test_r5_makes_the_progress_column_the_read_source(owner_workspace, make_invoice_pdf):
+    """R5 之后 `progress` 列就是读路径的源，快照退成被动副本。
+
+    这条替代了 R2 时期那条"手工改列会被下一次保存覆盖回来"的断言：那时列是镜像、快照是
+    源；换源之后改列就等于改可见进度，而快照不再被读路径改写。方向反了，判据也就要重写，
+    否则测试会去保护一个已经不存在的设计。
+    """
     job_id = _upload(owner_workspace, make_invoice_pdf("01100200011100045239"))
     with SessionLocal() as db:
         row = db.get(PersistentJob, job_id)
         assert row.status == "succeeded" and row.progress == "done"
-        repository = JobRepository()
-        record = db.get(PersistentJob, job_id)
-        record.progress = "lying"
+        row.progress = "parsing"
         db.commit()
-    # 手工制造的偏差必须能被下一次保存覆盖回一致——镜像来自同一份 Job，不来自列本身
+
     with SessionLocal() as db:
-        job = repository.get(job_id, owner_workspace["tenant_id"])
-    repository.save(job, owner_workspace["tenant_id"], owner_workspace["user_id"])
-    with SessionLocal() as db:
-        row = db.get(PersistentJob, job_id)
-        assert row.progress == row.snapshot["progress"] == "done"
+        job = JobRepository().get(job_id, owner_workspace["tenant_id"])
+        snapshot_progress = db.get(PersistentJob, job_id).snapshot["progress"]
+    assert job.progress.value == "parsing", "读路径仍在看快照"
+    assert snapshot_progress == "done", "快照不该被读路径改写"

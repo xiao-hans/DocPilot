@@ -13,7 +13,7 @@ from app.models.access import AuditEvent
 from app.models.document import Document, DocumentVersion
 from app.models.schema import FieldDefinition
 from app.services.pipeline import DocumentPipeline
-from app.services.job_repository import JobRepository
+from app.services.job_repository import IncompleteJobFacts, JobRepository
 
 
 class JobManager:
@@ -142,7 +142,11 @@ class JobManager:
         ids = self._repository.list_queued_ids()
         loaded: list[str] = []
         for job_id in ids:
-            job = self._repository.get_internal(job_id)
+            try:
+                job = self._repository.get_internal(job_id)
+            except IncompleteJobFacts:
+                # 一条坏行不能把整轮启动恢复带走：它留在库里，由 reclaim 或对账脚本处理。
+                continue
             if job is None or job.status is not JobStatus.QUEUED:
                 continue
             with self._lock:

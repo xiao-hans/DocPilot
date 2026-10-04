@@ -15,12 +15,25 @@ from app.services import outbox
 from app.contexts.processing import dispatch
 from app.contexts.processing.domain import JobAttempt
 from app.models.job import FileInfo, Job, JobStatus, Progress
+from app.contexts.templates.domain import TemplateVersion
 from app.models.persistent_job import PersistentJob
 from app.models.schema import FieldDefinition
 
 
 def _as_utc(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+_INCOMPLETE_REBUILDS = 0
+
+
+class IncompleteJobFacts(RuntimeError):
+    """规范化源不足以重建一条任务；`docs/20 §8.5` 选择报错而不是拼一个假对象。"""
+
+
+def incomplete_rebuild_count() -> int:
+    """R5 观察期的判据：这个计数必须为 0，才谈得上 §6.1 的"没有回退读路径的需要"。"""
+    return _INCOMPLETE_REBUILDS
 
 
 class JobRepository:
@@ -63,10 +76,8 @@ class JobRepository:
             ],
             "status": job.status.value,
             "progress": job.progress.value,
-            "result": job.result,
             "warnings": job.warnings,
             "error": job.error,
-            "excel_path": job.excel_path,
         }
 
     @staticmethod
@@ -124,6 +135,15 @@ class JobRepository:
                 JobAttempt.job_id == job.id, JobAttempt.attempt_no == job.attempt_count
             )
         )
+        if attempt is None:
+            # 执行链路里内存对象的 attempt_count 可能落后于刚创建的尝试行；告警属于
+            # "最近这一次跑出来的东西"，所以退回最近一条，而不是把告警丢掉。
+            attempt = db.scalar(
+                select(JobAttempt)
+                .where(JobAttempt.job_id == job.id)
+                .order_by(JobAttempt.attempt_no.desc())
+                .limit(1)
+            )
         if attempt is not None:
             attempt.warnings = list(job.warnings)
 
@@ -186,28 +206,83 @@ class JobRepository:
             )
             if record is None:
                 return None
-            snap = record.snapshot
-            created_at = record.created_at
-            if created_at.tzinfo is None:
-                created_at = created_at.replace(tzinfo=timezone.utc)
-            return Job(
-                id=record.id,
-                fields=[FieldDefinition(**item) for item in snap["fields"]],
-                created_at=created_at.timestamp(),
-                files=[FileInfo(**item) for item in snap["files"]],
-                status=JobStatus(record.status),  # 状态列是权威来源，快照只作兼容读模型
-                progress=Progress(snap["progress"]),
-                result=snap.get("result"),
-                warnings=list(snap.get("warnings") or []),
-                error=snap.get("error"),
-                excel_path=snap.get("excel_path"),
-                tenant_id=record.tenant_id,
-                owner_id=record.owner_id,
-                template_version_id=record.template_version_id,
-                idempotency_key=record.idempotency_key,
-                attempt_count=record.attempt_count,
-                finished_at=_as_utc(record.finished_at).timestamp() if record.finished_at else None,
+            return self._rebuild(db, record)
+
+    @staticmethod
+    def _rebuild(db, record: PersistentJob) -> Job:
+        """R5 切读：只从规范化源重建 `Job`，`record.snapshot` 一个字都不读。
+
+        重建不出来时抛 `IncompleteJobFacts` 而不是回落快照（`docs/20 §8.5`）：一条缺字段定义
+        或缺版本行的任务，若被拼成"字段为空、文件为零"的正常对象，界面就会把它当成正常任务
+        展示——那正是 R-013 双真相的原始症状。计数是给 §6.1 的观察期用的判据。
+        """
+        from app.contexts.review.service import export_rows
+
+        if record.template_version_id:
+            frozen = db.get(TemplateVersion, record.template_version_id)
+            raw_fields = frozen.fields if frozen is not None else None
+        else:
+            raw_fields = record.field_definitions
+        versions = list(
+            db.scalars(
+                select(DocumentVersion)
+                .where(DocumentVersion.job_id == record.id)
+                .order_by(DocumentVersion.original_filename, DocumentVersion.id)
+            ).all()
+        )
+        attempt = db.scalar(
+            select(JobAttempt).where(
+                JobAttempt.job_id == record.id,
+                JobAttempt.attempt_no == record.attempt_count,
             )
+        )
+        missing = [
+            name
+            for name, present in (
+                ("fields", bool(raw_fields)),
+                ("progress", record.progress is not None),
+                ("files", bool(versions)),
+            )
+            if not present
+        ]
+        if missing:
+            global _INCOMPLETE_REBUILDS
+            _INCOMPLETE_REBUILDS += 1
+            raise IncompleteJobFacts(
+                f"任务 {record.id} 的规范化源不完整，缺 {'、'.join(missing)}"
+            )
+
+        created_at = record.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        result = export_rows(db, tenant_id=record.tenant_id, job_id=record.id)
+        return Job(
+            id=record.id,
+            fields=[FieldDefinition(**item) for item in raw_fields],
+            created_at=created_at.timestamp(),
+            files=[
+                FileInfo(
+                    name=row.original_filename,
+                    storage_key=row.storage_key,
+                    page_count=row.page_count or 0,
+                    chars=row.text_chars or 0,
+                    ocr_applied=bool(row.ocr_applied),
+                    error=row.parse_error,
+                )
+                for row in versions
+            ],
+            status=JobStatus(record.status),
+            progress=Progress(record.progress),
+            result=result or None,
+            warnings=list(attempt.warnings or []) if attempt is not None else [],
+            error=attempt.error if attempt is not None else None,
+            tenant_id=record.tenant_id,
+            owner_id=record.owner_id,
+            template_version_id=record.template_version_id,
+            idempotency_key=record.idempotency_key,
+            attempt_count=record.attempt_count,
+            finished_at=_as_utc(record.finished_at).timestamp() if record.finished_at else None,
+        )
 
     def get_internal(self, job_id: str) -> Job | None:
         with self._sessions() as db:

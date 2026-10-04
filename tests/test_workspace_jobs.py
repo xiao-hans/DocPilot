@@ -12,7 +12,8 @@ from sqlalchemy import select
 from app.contexts.processing.domain import JobAttempt
 from app.db import SessionLocal
 from app.main import app
-from app.models.job import Job, JobStatus, Progress
+from app.models.job import FileInfo, Job, JobStatus, Progress
+from app.models.schema import FieldDefinition
 from app.models.persistent_job import PersistentJob
 from app.models.schema import INVOICE_TEMPLATE
 from app.services.job_manager import get_job_manager
@@ -117,6 +118,35 @@ def test_job_is_invisible_from_another_tenant(
         assert "不存在" in response.json()["detail"] or suffix == "/excel"
 
 
+def _seed_version(job: Job, tenant_id: str) -> None:
+    """R5 之后读路径只认规范化源：给这条合成任务补一行版本记录。"""
+    from datetime import datetime, timezone
+
+    from app.db import SessionLocal as _SessionLocal
+    from app.models.document import Document, DocumentVersion
+
+    now = datetime.now(timezone.utc)
+    with _SessionLocal() as db:
+        document_id = "d" * 32
+        db.add(Document(id=document_id, tenant_id=tenant_id, created_at=now))
+        db.add(
+            DocumentVersion(
+                id="v" * 32,
+                document_id=document_id,
+                tenant_id=tenant_id,
+                job_id=job.id,
+                revision=1,
+                original_filename=job.files[0].name,
+                storage_key=job.files[0].storage_key,
+                checksum="0" * 64,
+                media_type="application/pdf",
+                size_bytes=1024,
+                created_at=now,
+            )
+        )
+        db.commit()
+
+
 def test_interrupted_job_returns_to_queue_on_startup(
     owner_workspace: dict, sandbox: Path
 ) -> None:
@@ -125,14 +155,16 @@ def test_interrupted_job_returns_to_queue_on_startup(
 
     job = Job(
         id="a" * 32,
-        fields=[],
+        fields=[FieldDefinition(name="发票号码", type="text", description="20 位发票号码")],
         created_at=Job.now(),
+        files=[FileInfo(name="invoice.pdf", storage_key=f"{owner_workspace['tenant_id']}/{'a' * 32}/invoice.pdf")],
         status=JobStatus.PROCESSING,
         progress=Progress.PARSING,
         tenant_id=owner_workspace["tenant_id"],
         owner_id=owner_workspace["user_id"],
     )
     JobRepository().save(job, job.tenant_id or "", job.owner_id)
+    _seed_version(job, owner_workspace["tenant_id"])
 
     manager = get_job_manager()
     manager._jobs.pop(job.id, None)

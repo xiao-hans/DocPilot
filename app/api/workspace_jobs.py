@@ -40,6 +40,7 @@ from app.contexts.review import service as review
 from app.services import ExcelBuilder, audit, csv_builder
 from app.services.export_files import build_atomically
 from app.services.job_manager import get_job_manager
+from app.services.job_repository import IncompleteJobFacts
 from app.services.object_storage import ObjectStorage, build_object_storage
 
 router = APIRouter(prefix="/api/v1/tenants/{tenant_id}/jobs", tags=["jobs"])
@@ -258,7 +259,7 @@ def get_job_result(
     context: TenantContext = Depends(require_roles(*READ_ROLES)),
     db: Session = Depends(get_db),
 ):
-    job = _current_result(db, context, _load_job(job_id, context))
+    job = _load_job(job_id, context)
     return {
         "job_id": job.id,
         "status": job.status.value,
@@ -303,7 +304,7 @@ def get_job_excel(
     context: TenantContext = Depends(require_roles(*READ_ROLES)),
     db: Session = Depends(get_db),
 ):
-    job = _current_result(db, context, _load_job(job_id, context))
+    job = _load_job(job_id, context)
     if job.status not in (JobStatus.SUCCEEDED, JobStatus.PARTIAL):
         raise HTTPException(status_code=404, detail="任务未完成或失败，无法导出 Excel")
 
@@ -356,7 +357,7 @@ def export_job(
     db: Session = Depends(get_db),
 ):
     """按当前结果值导出（存在人工修订时不再回退机器快照），并保持注入防护。"""
-    job = _current_result(db, context, _load_job(job_id, context))
+    job = _load_job(job_id, context)
     if job.status not in (JobStatus.SUCCEEDED, JobStatus.PARTIAL):
         raise HTTPException(status_code=404, detail="任务未完成或失败，无法导出")
 
@@ -402,22 +403,15 @@ def _compensate_upload(storage: ObjectStorage, prefix: str) -> None:
         )
 
 
-def _current_result(db: Session, context: TenantContext, job: Job) -> Job:
-    """把结果行换成规范化表里的当前值（含人工修订），快照只作为历史任务的回落。
-
-    阶段 D 起机器值与修订值同时写 `extraction_results`；只要读快照，改过的字段就会在
-    `/result`、`/excel` 里退回机器值。规范化行为空说明这是阶段 D 之前的任务，那时没有
-    任何规范化记录可读，只能回到快照。
-    """
-    rows = review.export_rows(db, tenant_id=context.tenant.id, job_id=job.id)
-    return replace(job, result=rows) if rows else job
-
-
 def _load_job(job_id: str, context: TenantContext) -> Job:
     try:
         return get_job_manager().get_job(job_id, context.tenant.id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="任务不存在") from exc
+    except IncompleteJobFacts as exc:
+        # 重建不出来时不返回一个"字段为空、文件为零"的正常任务：那等于把数据缺陷伪装成
+        # 业务事实（docs/20 §8.5）。503 而不是 500：这是可修复的存储状态，不是请求错误。
+        raise HTTPException(status_code=503, detail="任务数据不完整，需先按 docs/20 回填") from exc
 
 
 def _parse_fields(raw: str) -> list[FieldDefinition]:

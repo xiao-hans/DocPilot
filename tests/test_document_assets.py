@@ -310,7 +310,13 @@ def test_repository_rejects_version_linked_to_a_different_job(owner_workspace):
         assert db.query(Document).count() == 0
 
 
-def test_legacy_job_snapshot_remains_readable_without_document_rows(owner_workspace):
+def test_job_without_normalized_facts_fails_loudly_after_r5(owner_workspace):
+    """R5 换源之后，"只有快照、没有版本行"的任务不再被拼成一条正常任务。
+
+    这条替代了原来的 `test_legacy_job_snapshot_remains_readable_without_document_rows`：
+    旧契约是"靠快照总能读出来"，新契约是"读不出来就报错"（`docs/20 §8.5`）。判据仍然
+    在：没有版本行必须被看见，而不是被静默渲染成零文件的成功任务。
+    """
     job = Job(
         id=uuid4().hex,
         fields=[],
@@ -322,8 +328,8 @@ def test_legacy_job_snapshot_remains_readable_without_document_rows(owner_worksp
     response = owner_workspace["client"].get(
         f"/api/v1/tenants/{job.tenant_id}/jobs/{job.id}"
     )
-    assert response.status_code == 200
-    assert response.json()["id"] == job.id
+    assert response.status_code == 503, response.text
     with SessionLocal() as db:
         assert db.query(Document).count() == 0
         assert db.query(DocumentVersion).count() == 0
+        assert db.get(PersistentJob, job.id) is not None, "报错不等于丢任务"
