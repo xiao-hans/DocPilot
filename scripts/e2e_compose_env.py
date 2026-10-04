@@ -61,7 +61,7 @@ WSL = ["wsl.exe", "-d", "Ubuntu-24.04", "-u", "root", "--", "bash", "-lc"]
 VENV_PY = str(BASE_DIR / ".venv" / "Scripts" / "python.exe")
 
 # compose 侧只碰 app profile 这四个服务；迁移是一次性的，其余三个常驻。
-APP_SERVICES = ("migrate", "api", "dispatcher", "worker")
+APP_SERVICES = ("migrate", "api", "dispatcher", "worker", "webhooks")
 COMPOSE_DIR = "/mnt/d/workspace/DocPilot"
 COMPOSE_ENV_REL = "data/e2e/compose-app.env"
 COMPOSE_ENV_PATH = BASE_DIR / COMPOSE_ENV_REL
@@ -258,6 +258,9 @@ def write_compose_env(run: str, path: Path, bootstrap_token: str) -> dict[str, s
         # 浏览器走 http 访问本机端口，Secure cookie 会被丢掉：登录看起来成功、下一个请求 401。
         "AUTH_COOKIE_SECURE": "false",
         "EXTRACTOR_MODE": "mock",
+        # Webhook 投递进程没有主密钥会拒绝启动；这里给一把只在一次性环境里用的密钥，
+        # 让 app-up 的形状核对能真的看到 webhooks 起来（端到端用例不会真发外联）。
+        "APP_WEBHOOK_MASTER_KEY": "e2e-webhook-master-" + run,
     }
     lines = [f"{key}={safe_env_value(key, value)}" for key, value in values.items()]
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -370,7 +373,7 @@ def wait_readyz(timeout_seconds: int) -> dict[str, Any]:
 def app_shape_problems(rows: dict[str, tuple[str, str]]) -> list[str]:
     """容器形态的期望形状：api/dispatcher/worker 都 running 且 API 健康检查已过，migrate 已退出。"""
     problems: list[str] = []
-    for service in ("api", "dispatcher", "worker"):
+    for service in ("api", "dispatcher", "worker", "webhooks"):
         state, status = rows.get(service, ("missing", "missing"))
         if state != "running":
             problems.append(f"{service} state={state}")
@@ -410,8 +413,14 @@ def app_up(build: bool, ready_timeout: int) -> int:
             logs = compose_app("logs", "--tail", "40", *APP_SERVICES, timeout=120)
         except Exception as exc:
             logs = f"日志取不到：{type(exc).__name__}"
+        hint = ""
+        if not build:
+            hint = (
+                "提示：这次是 --no-build，复用已有 tag 意味着镜像里不会有本次新增的进程入口"
+                "（例如新模块的 `python -m ...`）。去掉 --no-build 重建一次再判断。\n"
+            )
         raise SystemExit(
-            "app 容器形态不符合预期：" + "、".join(problems) + "\n" + logs
+            "app 容器形态不符合预期：" + "、".join(problems) + "\n" + hint + logs
         )
 
     revision = e2e_db_revision()

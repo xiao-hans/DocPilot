@@ -24,7 +24,7 @@ DOCKERFILE = BASE / "Dockerfile"
 DOCKERIGNORE = BASE / ".dockerignore"
 
 INFRA_SERVICES = {"postgres", "rabbitmq", "object-store"}
-APP_SERVICES = {"migrate", "api", "dispatcher", "worker"}
+APP_SERVICES = {"migrate", "api", "dispatcher", "worker", "webhooks"}
 
 
 class DuplicateKey(Exception):

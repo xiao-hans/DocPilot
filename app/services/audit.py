@@ -35,6 +35,12 @@ METADATA_KEYS: dict[str, frozenset[str]] = {
     "rule.updated": frozenset({"changed", "version"}),
     "platform.usage_viewed": frozenset({"scope", "window_days", "rows"}),
     "platform.usage_failures_viewed": frozenset({"scope", "window_days", "codes", "truncated"}),
+    # 出站 Webhook（FR-041）：只记主机名与计数，完整 URL 的 path/query 可能自带 token。
+    # 投递本身不写审计——一次事件 × N 端点 × 重试会把审计面淹成噪声，明细在 webhook_deliveries。
+    "webhook.endpoint_created": frozenset({"url_host", "secret_version", "event_types"}),
+    "webhook.endpoint_status_changed": frozenset({"from", "to"}),
+    "webhook.endpoint_rotated": frozenset({"secret_version", "grace_seconds"}),
+    "webhook.endpoint_deleted": frozenset({"url_host", "event_types"}),
     "automation.dispatched": frozenset({"consumed", "applied", "skipped", "failed"}),
     "document.exported": frozenset({"format"}),
     "job.exported": frozenset({"format"}),

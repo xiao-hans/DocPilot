@@ -19,6 +19,7 @@ from app.contexts.processing import service as processing
 from app.contexts.review import api as review_api
 from app.contexts.search import api as search_api
 from app.contexts.templates import api as templates_api
+from app.contexts.webhooks import api as webhooks_api
 from app.db import SessionLocal, initialize_development_schema
 from app.errors import AccessError
 from app.services.job_manager import get_job_manager
@@ -55,6 +56,7 @@ app.include_router(operations_api.router)
 app.include_router(operations_api.platform_router)
 app.include_router(search_api.router)
 app.include_router(automation_api.router)
+app.include_router(webhooks_api.router)
 
 
 @app.exception_handler(AccessError)

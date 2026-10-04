@@ -33,6 +33,14 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    """布尔环境变量：未设置用默认值，设置了就按真字符串判定（写错就当 false）。"""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 # ---- 目录 ----
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", BASE_DIR / "uploads"))
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", BASE_DIR / "outputs"))
@@ -106,3 +114,19 @@ AI_MODEL = os.getenv("AI_MODEL", "deepseek-chat")
 AI_TIMEOUT = _env_int("AI_TIMEOUT", 90)
 AI_MAX_RETRIES = _env_int("AI_MAX_RETRIES", 2)
 AI_TEMPERATURE = _env_float("AI_TEMPERATURE", 0.1)
+
+# ---- 出站 Webhook（FR-041，DOC-DD-021 §9）----
+# 主密钥为空即禁用出站投递：宁可"这件事没做"，也不退化成"用一个内置默认密钥签"，
+# 那等于所有部署共用同一个可预测的签名密钥。
+WEBHOOK_MASTER_KEY = os.getenv("WEBHOOK_MASTER_KEY", "").strip()
+WEBHOOK_ENABLED = bool(WEBHOOK_MASTER_KEY)
+WEBHOOK_TIMEOUT_SECONDS = min(max(_env_int("WEBHOOK_TIMEOUT_SECONDS", 5), 1), 60)
+WEBHOOK_MAX_ATTEMPTS = min(max(_env_int("WEBHOOK_MAX_ATTEMPTS", 6), 1), 20)
+WEBHOOK_BACKOFF_SECONDS = min(max(_env_int("WEBHOOK_BACKOFF_SECONDS", 15), 1), 3600)
+WEBHOOK_BACKOFF_MAX_SECONDS = min(max(_env_int("WEBHOOK_BACKOFF_MAX_SECONDS", 1800), 1), 86400)
+WEBHOOK_LEASE_SECONDS = min(max(_env_int("WEBHOOK_LEASE_SECONDS", 120), 10), 3600)
+WEBHOOK_ROTATION_GRACE_SECONDS = min(max(_env_int("WEBHOOK_ROTATION_GRACE_SECONDS", 3600), 0), 86400)
+WEBHOOK_POLL_SECONDS = min(max(_env_int("WEBHOOK_POLL_SECONDS", 3), 1), 300)
+# 本机测试要打到 127.0.0.1，默认关：服务端主动外联的目标默认不能落在内网。
+WEBHOOK_ALLOW_PRIVATE_TARGETS = _env_bool("WEBHOOK_ALLOW_PRIVATE_TARGETS", False)
+WEBHOOK_ALLOW_INSECURE_TARGETS = _env_bool("WEBHOOK_ALLOW_INSECURE_TARGETS", False)
