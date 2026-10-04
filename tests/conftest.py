@@ -43,6 +43,7 @@ from app.contexts.review.domain import DocumentText, ExtractionResult, ResultRev
 from app.contexts.search.domain import SearchEntry
 from app.contexts.templates.domain import Template, TemplateVersion
 from app.contexts.webhooks.domain import WebhookDelivery, WebhookEndpoint
+from app.contexts.quota.domain import TenantQuota
 from app.db import (  # noqa: E402
     SessionLocal,
     assert_disposable_database,
@@ -74,6 +75,7 @@ PASSWORD = "test-password-1234"
 
 # 先删子表再删父表，满足 SQLite 外键约束。
 _TABLES_IN_DELETE_ORDER = (
+    TenantQuota.__table__,
     WebhookDelivery.__table__,
     WebhookEndpoint.__table__,
     RuleRun.__table__,

@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import TenantContext, require_csrf, require_roles
 from app.config import MAX_FILES_PER_JOB, MAX_UPLOAD_MB, OUTPUT_DIR, QUEUE_ENABLED
 from app.contexts.processing import service as processing
+from app.contexts.quota import service as quota_service
 from app.contexts.templates import service as templates
 from app.db import get_db
 from app.models.document import Document, DocumentVersion
@@ -117,6 +118,14 @@ async def create_job(
         validated_fields = _parse_fields(fields)
     else:
         raise HTTPException(status_code=422, detail="必须提供 fields 或 template_version_id")
+
+    # 配额判定必须在这之前：这里之后才开始写对象与行，被拒的请求要能一条痕迹都不留。
+    quota_service.enforce_upload(
+        db,
+        tenant_id=tenant_id,
+        documents=len(checked),
+        total_bytes=sum(len(content) for _name, content in checked),
+    )
 
     manager = get_job_manager()
     job = manager.create_job(

@@ -37,6 +37,8 @@ METADATA_KEYS: dict[str, frozenset[str]] = {
     "rule.updated": frozenset({"changed", "version"}),
     "platform.usage_viewed": frozenset({"scope", "window_days", "rows"}),
     "platform.usage_failures_viewed": frozenset({"scope", "window_days", "codes", "truncated"}),
+    # 配额只有两个轴，且都是"设成多少"的裸数值，不含任何口径推导。
+    "tenant.quota_updated": frozenset({"max_documents", "max_storage_bytes"}),
     # 出站 Webhook（FR-041）：只记主机名与计数，完整 URL 的 path/query 可能自带 token。
     # 投递本身不写审计——一次事件 × N 端点 × 重试会把审计面淹成噪声，明细在 webhook_deliveries。
     "webhook.endpoint_created": frozenset({"url_host", "secret_version", "event_types"}),

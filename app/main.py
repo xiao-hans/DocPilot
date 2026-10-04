@@ -16,6 +16,7 @@ from app.contexts.automation import api as automation_api
 from app.contexts.documents import api as documents_api
 from app.contexts.operations import api as operations_api
 from app.contexts.processing import service as processing
+from app.contexts.quota import api as quota_api
 from app.contexts.review import api as review_api
 from app.contexts.search import api as search_api
 from app.contexts.templates import api as templates_api
@@ -57,6 +58,7 @@ app.include_router(operations_api.platform_router)
 app.include_router(search_api.router)
 app.include_router(automation_api.router)
 app.include_router(webhooks_api.router)
+app.include_router(quota_api.router)
 
 
 @app.exception_handler(AccessError)
