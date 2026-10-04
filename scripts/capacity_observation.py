@@ -1004,7 +1004,7 @@ def write_report(payload: dict[str, object]) -> Path:
         "## 未覆盖（不得当作已验证）",
         "",
         "- 真实提取器（OCR/LLM）的耗时、失败率与外部服务配额；本轮 mock 提取器的执行时间不代表生产处理时间。",
-        "- S3 后端下的同路径观测（本轮为 local 目录）。对象卷的备份恢复演练已由 G7 交付（`scripts/object_store_backup_drill.py`），但那验证的是"副本能否恢复并核对一致"，不等于 S3 后端下的应用读写路径已被观测。",
+        "- S3 后端下的同路径观测（本轮为 local 目录）。对象卷的备份恢复演练已由 G7 交付（`scripts/object_store_backup_drill.py`），但那验证的是「副本能否恢复并核对一致」，不等于 S3 后端下的应用读写路径已被观测。",
         "- 多机部署下的网络分区、broker 集群故障转移、跨机 Worker 时钟偏移。",
         "- 真实 1TB 数据量与 100 并发下的服务端资源竞争（本轮 Worker 与 API 同机、数据库同机）。",
         "- Worker 子进程自身的内存曲线（脚本只测观测进程；Worker 日志留在 `data/capacity/<run>/workers/`）。",
