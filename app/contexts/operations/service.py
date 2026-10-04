@@ -18,6 +18,7 @@ from app.contexts.processing.domain import JobAttempt
 from app.contexts.review.domain import ExtractionResult, ResultRevision
 from app.contexts.search.domain import SearchEntry
 from app.errors import AccessError
+from app.models.access import AuditEvent
 from app.models.account import Tenant
 from app.models.document import Document, DocumentVersion
 from app.models.outbox import DomainEventRecord
@@ -245,9 +246,12 @@ def platform_usage(
             "storage_bytes": sum(row["storage_bytes"] for row in rows),
             "pending_events": sum(row["pending_events"] for row in rows),
         },
-        # 快照退役 R5 的观察期判据（docs/20 §6.1）：不可重建的任务读一次记一次。
-        # 它是**进程内**计数，重启归零、多进程各算各的，所以只用来回答"这段时间里
-        # 有没有出现过读不出来的任务"，不能被当成跨进程的累计指标。
+        # 两个读数并列，因为它们的失效方式不同：
+        #   job_rebuild_incomplete_total 来自审计表，跨重启、跨进程可核对——§6.1 的门禁看这条；
+        #   job_rebuild_incomplete 是**本进程**计数，重启归零，只回答"这个 worker 起来之后有没有过"。
+        "job_rebuild_incomplete_total": db.scalar(
+            select(func.count(AuditEvent.id)).where(AuditEvent.action == "job.rebuild_incomplete")
+        ) or 0,
         "job_rebuild_incomplete": incomplete_rebuild_count(),
         "tenants": rows,
     }

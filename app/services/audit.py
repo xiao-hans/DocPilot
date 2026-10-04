@@ -25,6 +25,9 @@ METADATA_KEYS: dict[str, frozenset[str]] = {
     "job.created": frozenset({"file_count"}),
     "job.excel_exported": frozenset(),
     "job.retried": frozenset({"attempt_count"}),
+    # 快照退役 R5 的观察期判据（docs/20 §6.1）：只记"哪条任务缺哪些规范化事实"，
+    # 不记字段值、文件名或错误正文——那些都在租户数据里，平台审计不该把它们带出来。
+    "job.rebuild_incomplete": frozenset({"missing"}),
     "template.created": frozenset({"name"}),
     "template.updated": frozenset({"name"}),
     "template.published": frozenset({"revision"}),

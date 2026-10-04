@@ -8,12 +8,14 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import select
 
 from app.contexts.processing.domain import JobAttempt
 from app.db import SessionLocal
+from app.models.access import AuditEvent
 from app.models.document import DocumentVersion
 from app.models.job import JobStatus
 from app.models.persistent_job import PersistentJob
@@ -164,3 +166,41 @@ def test_observation_counter_is_visible_on_the_platform_usage_view(owner_workspa
 
     after = owner_workspace["client"].get("/api/v1/platform/usage?days=30").json()
     assert after["job_rebuild_incomplete"] == before + 1
+
+
+def test_incomplete_rebuild_leaves_a_durable_audit_event(owner_workspace):
+    """§6.1 的观察期判据必须活过进程重启：证据在审计表里，不在内存计数里。
+
+    这条同时钉住两件事：事件确实写下（否则重启后无从核对），以及审计只带内部 ID 与
+    缺项名——不带字段值、文件名或错误正文（平台侧审计不该把租户数据带出来）。
+    """
+    broken_id = uuid.uuid4().hex
+    with SessionLocal() as db:
+        db.add(
+            PersistentJob(
+                id=broken_id,
+                tenant_id=owner_workspace["tenant_id"],
+                owner_id=owner_workspace["user_id"],
+                status="succeeded",
+                created_at=datetime.now(timezone.utc),
+                attempt_count=1,
+                snapshot={"fields": [{"name": "x"}], "files": [], "status": "succeeded", "progress": "done"},
+            )
+        )
+        db.commit()
+    try:
+        JobRepository().get(broken_id, owner_workspace["tenant_id"])
+    except IncompleteJobFacts:
+        pass
+
+    with SessionLocal() as db:
+        event = db.scalar(select(AuditEvent).where(AuditEvent.object_id == broken_id))
+    assert event is not None, "重建失败没有留下持久证据，观察期判据活不过重启"
+    assert event.action == "job.rebuild_incomplete"
+    assert event.tenant_id == owner_workspace["tenant_id"]
+    # 三个都缺：直接插入的历史行没有 field_definitions/progress 列，也没有版本行。
+    assert sorted(event.metadata_["missing"]) == ["fields", "files", "progress"]
+    assert set(event.metadata_) == {"missing"}
+
+    payload = owner_workspace["client"].get("/api/v1/platform/usage?days=30").json()
+    assert payload["job_rebuild_incomplete_total"] >= 1

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
 
@@ -11,7 +12,7 @@ from sqlalchemy.orm import sessionmaker
 from app.db import SessionLocal
 from app.models.access import AuditEvent
 from app.models.document import Document, DocumentVersion
-from app.services import outbox
+from app.services import audit, outbox
 from app.contexts.processing import dispatch
 from app.contexts.processing.domain import JobAttempt
 from app.models.job import FileInfo, Job, JobStatus, Progress
@@ -248,6 +249,7 @@ class JobRepository:
         if missing:
             global _INCOMPLETE_REBUILDS
             _INCOMPLETE_REBUILDS += 1
+            JobRepository._record_incomplete_rebuild(db, record, missing)
             raise IncompleteJobFacts(
                 f"任务 {record.id} 的规范化源不完整，缺 {'、'.join(missing)}"
             )
@@ -283,6 +285,26 @@ class JobRepository:
             attempt_count=record.attempt_count,
             finished_at=_as_utc(record.finished_at).timestamp() if record.finished_at else None,
         )
+
+    @staticmethod
+    def _record_incomplete_rebuild(db, record: PersistentJob, missing: list[str]) -> None:
+        """把"重建不出来"写进审计，让 §6.1 的观察期能跨进程重启被核对。
+
+        进程内计数活不过一次重启，用它做删列门禁等于把证据放在最容易丢的地方。
+        审计写失败不该掩盖真正的问题，所以异常一律吞掉并就地记日志：判据是附加物，
+        不是这条读路径的主张。
+        """
+        try:
+            audit.record_now(
+                tenant_id=record.tenant_id,
+                actor_user_id=None,
+                action="job.rebuild_incomplete",
+                object_type="job",
+                object_id=record.id,
+                metadata={"missing": list(missing)},
+            )
+        except Exception:  # noqa: BLE001 - 主异常必须是 IncompleteJobFacts
+            logging.getLogger(__name__).warning("重建失败审计写入失败 job_id=%s", record.id, exc_info=True)
 
     def get_internal(self, job_id: str) -> Job | None:
         with self._sessions() as db:
