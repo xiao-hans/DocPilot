@@ -3,8 +3,12 @@
 # pg_dump 源库 → 恢复到隔离库 → 核对结构/行数/关键指纹 → 删除隔离库。
 # 只证明"备份脚本与恢复核对可在本机重复运行"，不代表异机灾备或 RPO/RTO 达标。
 #
+# 范围只到数据库。对象卷（原文件的存放处）不在这里，跑完这个脚本不等于"备份演练通过"——
+# 结尾会把这条边界打印出来，避免"一个演练绿了"被读成"数据都有已验证的备份"。
+#
 # 用法（在 WSL 内，docker CLI 只存在于 Ubuntu 里）：
 #   cd /mnt/d/workspace/DocPilot && bash scripts/backup_restore_drill.sh [源库名]
+# 想在 Windows 侧一次跑完库 + 对象卷两项：bash scripts/run_backup_drills.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -116,5 +120,11 @@ diff <(fingerprints "$SOURCE_DB") <(fingerprints "$DRILL_DB") > "$WORK/fp.diff" 
 
 echo "drill: 核对通过"
 fingerprints "$SOURCE_DB"
+# 边界必须随结果一起打印：只跑这个脚本时，"演练通过"覆盖的是数据库，不是对象数据。
+# 这条曾经真的被误读过（R-018 的登记理由就是"数据库演练不覆盖对象存储"）。
+echo "drill: DRILL RESULT: DB PASS（范围=PostgreSQL 备份与恢复）"
+echo "drill: 未覆盖对象卷。要覆盖对象数据，另跑 scripts/object_store_backup_drill.py；"
+echo "drill: 一次跑完两项请用 bash scripts/run_backup_drills.sh。"
 cleanup
 trap - EXIT
+
