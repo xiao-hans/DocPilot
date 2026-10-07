@@ -29,7 +29,6 @@ import ctypes
 import hashlib
 import json
 import os
-import re
 import subprocess
 import sys
 import threading
@@ -134,6 +133,9 @@ from app.services.csv_builder import build as csv_build  # noqa: E402
 from app.services.excel_builder import ExcelBuilder  # noqa: E402
 from app.services.job_manager import get_job_manager  # noqa: E402
 from app.services.object_storage import build_object_storage  # noqa: E402
+from scripts.capacity_leak_probe import find_leaks  # noqa: E402
+from scripts.capacity_thresholds import evaluate as evaluate_thresholds  # noqa: E402
+from scripts.capacity_thresholds import render_section as render_threshold_section  # noqa: E402
 
 FIELDS = [FieldDefinition(**item) for item in INVOICE_TEMPLATE]
 TERMINAL = ("succeeded", "partial", "failed")
@@ -223,9 +225,6 @@ def process_rss_bytes() -> int | None:
 
 def mb(value: float | None) -> str:
     return "—" if value is None else f"{value / 1024 / 1024:.1f} MB"
-
-
-MARKER_PATTERN = re.compile(r"9\d{19}")
 
 
 def make_pdf(path: Path, marker: str, extra_pages: int = 0) -> int:
@@ -503,15 +502,11 @@ def phase_reads(tenants: list[dict[str, str]], rounds: int) -> dict[str, object]
                     if name == "search_hit" and not payload.get("total"):
                         # 检索命中 0 条时，时延数字测的是空索引，不能当作读路径观测。
                         empty_hits += 1
-                    # 泄漏探针：响应里出现任何别的租户的唯一标记都算失败。
-                    # 一次正则扫描代替"逐个租户标记做子串查找"：1000 个标记 × 上千次查询会退化成平方级。
                     text = json.dumps(payload, ensure_ascii=False, default=str)
-                    for marker in set(MARKER_PATTERN.findall(text)):
-                        owner = owner_of.get(marker)
-                        if owner is not None and owner != tenant_id:
-                            leaks.append(f"{name}:marker_of_{owner}")
-                        elif owner is None:
-                            leaks.append(f"{name}:unknown_marker_{marker}")
+                    # 泄漏探针：响应里出现任何别的租户的唯一标记都算失败。
+                    # 判定在 scripts/capacity_leak_probe.py：只认已播种的标记，
+                    # 否则校验和里的一段数字会被读成越权。
+                    leaks += find_leaks(text, owner_of, tenant_id, name)
             log(f"读路径轮 {round_no + 1}/{rounds} 完成（{len(samples['search_hit'])} 次检索）")
     latency = {
         name: {
@@ -907,9 +902,9 @@ def write_report(payload: dict[str, object]) -> Path:
         f"| 主机 | {payload['host']} |",
         f"| 磁盘占用 | 观测数据目录 {mb(disk['run_bytes'])}；数据库 {mb(disk['database_bytes'])}（{disk['database_size_note']}） |",
         "",
-        "> 这是一份**测量基线**，不是容量结论。性能阈值（P95 时延、吞吐上限、持续时间、文档构成、"
-        "CPU/内存限额）尚未评审确认（`docs/17 §9`），因此本报告不得被引用为"
-        "\u201c支持 100 并发 / 1TB\u201d；本地也没有写入真实 1TB 数据。",
+        "> 这是一份**测量基线**，不是容量结论。`docs/19 §1.2` 的链路阈值已由负责人批准（2026-10-07，`docs/19 §6`），"
+        "判定见下面的「链路阈值判定」一节；**处理阈值（真实 OCR/LLM 的单任务耗时、吞吐上限、持续时间、文档构成、"
+        "CPU/内存限额）仍未设定**，因此本报告仍不得被引用为\u201c支持 100 并发 / 1TB\u201d；本地也没有写入真实 1TB 数据。",
         "",
         "## A. 读路径时延与租户隔离（TC-PERF-001）",
         "",
@@ -1001,6 +996,9 @@ def write_report(payload: dict[str, object]) -> Path:
         large["read_bytes_verdict"],
         f"- 观测进程结束时 RSS 为 {large['rss_peak_mb']} MB。",
         "",
+    ]
+    lines += render_threshold_section(payload)
+    lines += [
         "## 未覆盖（不得当作已验证）",
         "",
         "- 真实提取器（OCR/LLM）的耗时、失败率与外部服务配额；本轮 mock 提取器的执行时间不代表生产处理时间。",
@@ -1009,7 +1007,8 @@ def write_report(payload: dict[str, object]) -> Path:
         "- 真实 1TB 数据量与 100 并发下的服务端资源竞争（本轮 Worker 与 API 同机、数据库同机）。",
         "- Worker 子进程自身的内存曲线（脚本只测观测进程；Worker 日志留在 `data/capacity/<run>/workers/`）。",
         "- CPU 占用与每秒查询数：观测进程、Worker 进程与数据库同机混跑，采样无法归因，因此本轮不报 CPU 数字。",
-        "- 性能阈值判定：阈值未评审，本报告不设\u201c通过/不通过\u201d。",
+        "- 处理阈值判定：真实提取器（OCR/LLM）未接入，本轮 mock 数字不进入 `docs/19 §1.2` 的任何判定；"
+        "\u201c链路阈值满足\u201d说的是调度与读路径这几条，不是\u201c处理性能已达标\u201d。",
         "",
     ]
     path = Path(ARGS.report)
@@ -1106,7 +1105,17 @@ def main() -> int:
         and not queue["jobs_without_results"]
         and queue["unresolved_dispatch_rows"] == 0
     )
-    log(f"OBSERVATION RESULT: {'PASS' if passed else 'CHECK'}（阈值未评审，PASS 只表示自洽与无泄漏）")
+
+    # 阈值判定进入退出码：一份"全绿但超阈值"的报告不能被当成通过。
+    verdict = evaluate_thresholds(payload)
+    for row in verdict["rows"]:
+        log(f"阈值判定 | {row['阈值']} | {row['判定']} | {row['实测']}")
+    passed = passed and not verdict["breaches"]
+    if verdict["breaches"]:
+        threshold_note = f"已批链路阈值不满足 {len(verdict['breaches'])} 项：" + "；".join(verdict["breaches"])
+    else:
+        threshold_note = "已批链路阈值全部满足"
+    log(f"OBSERVATION RESULT: {'PASS' if passed else 'CHECK'}（{threshold_note}；处理阈值未设定，不参与判定）")
 
     import pika
 
