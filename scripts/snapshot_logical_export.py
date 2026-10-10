@@ -18,8 +18,11 @@ R6 要 `ALTER TABLE processing_jobs DROP COLUMN snapshot`，**不可逆**：出�
 
 - **自包含**：导出目录里有 `manifest.json`（行数、逐行摘要、源库标识、时间、列名）与
   `snapshot.jsonl`（每行一条 JSON）。有清单才能事后证明"这份导出覆盖了当时库里的每一行"。
-- **可校验**：`--verify` 重算每行摘要并与清单比对，任何一行被改动都会被抓到。
-- **只读**：导出过程不改任何一行、不建表、不加索引。
+- **可校验**（`--verify`）：重算每行摘要并与清单比对，任何一行被改动都会被抓到。
+- **可加载**（`--replay`，维护轮 M11）：把导出写进一个**空的一次性库**再逐行读回，比对快照逐键相等。
+  `--verify` 只证明"文件没被改过"——一份字段名全错但摘要自洽的导出同样能通过它；
+  `--replay` 覆盖列类型、JSON 往返与主键约束，才是"这份兜底将来真能用"的判据。
+- **只读**：导出过程不改任何一行、不建表、不加索引。`--replay` 只写目标一次性库。
 - **落点自检**：默认输出目录在仓库**之外**（`~/docpilot-snapshot-export`），
   且脚本拒绝写入被 git 跟踪的目录——导出落到版本控制里等于把客户数据提交进仓库。
 
@@ -27,6 +30,10 @@ R6 要 `ALTER TABLE processing_jobs DROP COLUMN snapshot`，**不可逆**：出�
 
     PYTHONPATH=. .venv/Scripts/python.exe scripts/snapshot_logical_export.py --out <dir>
     PYTHONPATH=. .venv/Scripts/python.exe scripts/snapshot_logical_export.py --verify <dir>
+    PYTHONPATH=. .venv/Scripts/python.exe scripts/snapshot_logical_export.py --replay <dir> \
+        --target-url postgresql+psycopg://user:pw@127.0.0.1:5432/docpilot_replay_test
+
+`--replay` 的目标库必须先由调用方建好表结构（`alembic upgrade head`），且库名必须是一次性库。
 
 **这不是删列授权**。它只是把门禁第 3 条里"另存兜底"这一步做成可执行的工具；
 R6 仍受 `docs/20 §6` 四条门禁约束，其中第 4 条（负责人书面确认）未满足。
@@ -196,16 +203,166 @@ def _source_label() -> str:
     return f"{url.drivername}://{url.database or '(default)'}"
 
 
+def replay(out: Path, target_url: str) -> int:
+    """把一份导出写进一个**空库**再逐行读回，证明它可加载（维护轮 M11）。
+
+    `--verify` 只证明"文件没被改过"，证明不了"这份导出能重建出可用的行"——
+    摘要算的是文件字节，一份字段名全错但摘要自洽的导出同样能通过。这里的判据是
+    **加载后再读回，与文件里的快照逐键相等**：它覆盖列类型、JSON 往返与主键约束。
+
+    目标库必须是可丢弃库（`assert_disposable_database`）：本函数会写行，写进开发库
+    等于把导出内容混进真实数据。表结构必须先由调用方 `alembic upgrade head` 建好。
+
+    ## 外键：一个实测到的约束（本函数第一次跑就撞上）
+
+    `processing_jobs.tenant_id` 引用 `tenants`。空库里没有父行，插入直接
+    `ForeignKeyViolation`。**这本身就是一条关于兜底完整性的结论**：只导出 `snapshot`
+    列**不构成一次可独立恢复的备份**——它保住的是这一列的内容，把它读回数据库还需要周围的父行。
+    兜底文件的价值在于"卷副本坏了时这一列还能读出来"，不在于"这份文件能单独把库建回来"。
+
+    处理顺序刻意如此：**先尝试关掉外键强制**（PostgreSQL 的 `session_replication_role=replica`、
+    SQLite 的 `PRAGMA foreign_keys=OFF`），这时一个父行都不伪造；权限不足时才回退到
+    "给导出里出现的每个租户插一条最小桩行"。走了哪条路会打印出来——回退路径下目标库里
+    多了导出本身没有的行，读者应当知道。
+    """
+    from sqlalchemy import create_engine, insert, text
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.orm import sessionmaker
+
+    from app.db import assert_disposable_database
+
+    target_name = assert_disposable_database(target_url)
+    rows_path = out / ROWS_NAME
+    manifest_path = out / MANIFEST_NAME
+    if not rows_path.is_file() or not manifest_path.is_file():
+        print(f"缺少 {MANIFEST_NAME} 或 {ROWS_NAME}：{out} 不是一份完整导出", file=sys.stderr)
+        return 1
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    records = [
+        json.loads(line) for line in rows_path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
+
+    dialect = make_url(target_url).drivername.split("+")[0]
+    engine = create_engine(target_url)
+    Session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    disabled = _disable_fk(engine, dialect)
+    stubbed = 0
+    loaded = 0
+    mismatches: list[str] = []
+    try:
+        with Session() as db:
+            if not disabled:
+                stubbed = _stub_parents(db, records)
+            for row in records:
+                db.execute(
+                    insert(PersistentJob).values(
+                        id=row["id"],
+                        tenant_id=row["tenant_id"],
+                        owner_id=None,
+                        status=row["status"],
+                        created_at=datetime.now(timezone.utc),
+                        finished_at=None,
+                        attempt_count=0,
+                        snapshot=row["snapshot"],
+                    )
+                )
+                loaded += 1
+            db.commit()
+
+        with Session() as db:
+            for row in records:
+                stored = db.get(PersistentJob, row["id"])
+                if stored is None:
+                    mismatches.append(f"{row['id']}: 加载后读不到")
+                elif stored.snapshot != row["snapshot"]:
+                    mismatches.append(f"{row['id']}: 读回的快照与导出不一致")
+    finally:
+        engine.dispose()
+
+    expected_count = int(manifest.get("row_count") or 0)
+    if loaded != expected_count:
+        mismatches.append(f"加载行数 {loaded} 与清单 {expected_count} 不符")
+    if mismatches:
+        print("REPLAY RESULT: FAIL")
+        for line in mismatches[:20]:
+            print(f"  - {line}")
+        return 1
+    how = "外键强制已关闭，未伪造任何父行" if disabled else f"回退路径：为 {stubbed} 个租户插入最小桩行"
+    print(f"REPLAY RESULT: PASS（{loaded} 行写入 {target_name} 后逐行读回一致；{how}）")
+    return 0
+
+
+def _disable_fk(engine, dialect: str) -> bool:
+    """尽量关掉外键强制；返回是否成功。失败不算错误——回退路径是插桩父行。"""
+    from sqlalchemy import text
+
+    try:
+        with engine.begin() as conn:
+            if dialect == "postgresql":
+                conn.execute(text("SET session_replication_role = replica"))
+            elif dialect == "sqlite":
+                conn.execute(text("PRAGMA foreign_keys=OFF"))
+            else:
+                return False
+        return True
+    except Exception:
+        # 非超级用户会在这里被拒。不打印堆栈：这是预期分支，不是异常。
+        return False
+
+
+def _stub_parents(db, records: list[dict]) -> int:
+    """给导出里出现的每个租户插一条最小桩行，只为满足引用完整性。"""
+    from app.models.account import Tenant
+
+    existing = {row[0] for row in db.query(Tenant.id).all()}
+    created = 0
+    now = datetime.now(timezone.utc)
+    for tenant_id in sorted({row["tenant_id"] for row in records}):
+        if tenant_id in existing:
+            continue
+        db.add(
+            Tenant(
+                id=tenant_id,
+                name=f"replay-stub-{tenant_id[:8]}",
+                status="active",
+                created_at=now,
+            )
+        )
+        created += 1
+    if created:
+        db.flush()
+    return created
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--out", type=Path, help=f"导出目录（默认 {DEFAULT_OUT}）")
     group.add_argument("--verify", type=Path, metavar="DIR", help="校验一份已有导出")
+    group.add_argument(
+        "--replay",
+        type=Path,
+        metavar="DIR",
+        help="把导出写进一个可丢弃库再读回（需同时给 --target-url）",
+    )
     parser.add_argument("--tenant", default=None, help="只导出该租户的任务；默认全部")
+    parser.add_argument(
+        "--target-url",
+        default=None,
+        help="--replay 的目标库连接串；库名必须是一次性库（<名称>_test 或 test_<名称>）",
+    )
     args = parser.parse_args()
 
     if args.verify is not None:
         return verify(args.verify)
+    if args.replay is not None:
+        if not args.target_url:
+            print("--replay 需要 --target-url（且库名必须是一次性库）", file=sys.stderr)
+            return 1
+        return replay(args.replay, args.target_url)
     _reject_tracked_output(args.out)
     return export(args.out, tenant_id=args.tenant)
 

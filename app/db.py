@@ -20,13 +20,28 @@ _DISPOSABLE_DB_NAME = re.compile(r"^(?:[\w.-]*_test|test_[\w.-]+)$")
 
 
 def assert_disposable_database(database_url: str) -> str:
-    """校验目标数据库可被清空，返回库名；不合规时抛出异常。"""
-    name = make_url(database_url).database or ""
-    if not _DISPOSABLE_DB_NAME.match(name):
+    """校验目标数据库可被清空，返回**库名**；不合规时抛出异常。
+
+    SQLite 的 `database` 是文件路径而不是库名，直接拿整条路径去匹配名字形状会让守卫
+    **对所有 SQLite 目标一律拒绝**（维护轮 M11 实测：`sqlite:///…/test_replay.sqlite3`
+    被判不合规）。那是个假阴性、方向安全但让"在 SQLite 上演练"变得不可能，所以这里
+    按方言取不同的名字来源：SQLite 取文件名去掉最后一个后缀，其余方言取 `database`。
+    """
+    url = make_url(database_url)
+    raw = url.database or ""
+    if url.drivername.startswith("sqlite"):
+        # `:memory:` 与空串没有文件名可判：内存库不可能装着真实数据，但也没有
+        # "名字形状"可核，按最小惊讶拒绝（fail-closed），由调用方显式换用文件库。
+        raw = Path(raw).name
+        if raw.endswith(".sqlite3"):
+            raw = raw[: -len(".sqlite3")]
+        elif raw.endswith(".db"):
+            raw = raw[: -len(".db")]
+    if not _DISPOSABLE_DB_NAME.match(raw):
         raise RuntimeError(
-            f"数据库名 {name!r} 不符合一次性库命名（<名称>_test 或 test_<名称>），拒绝清空。"
+            f"数据库名 {raw!r} 不符合一次性库命名（<名称>_test 或 test_<名称>），拒绝清空。"
         )
-    return name
+    return raw
 
 
 class Base(DeclarativeBase):
