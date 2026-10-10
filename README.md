@@ -10,7 +10,7 @@
 |---|---|
 | 交付阶段 | 阶段 A–F 于 2026-10-02 交付；阶段 G0–G28 交付至 2026-10-07 |
 | 迁移 head | `d5e2b74c0a19`（快照退役 R1），单线性 11 步 |
-| 后端用例 | 364 项（PostgreSQL 与 SQLite 基础套件各 364 项，0 失败 0 跳过） |
+| 后端用例 | 372 项（PostgreSQL 与 SQLite 基础套件各 372 项，0 失败 0 跳过） |
 | 浏览器用例 | 13 项（Playwright，系统 Chrome） |
 | 默认基线 | `BROKER_URL` 空、`STORAGE_BACKEND=local`、`EXTRACTOR_MODE=mock`、Webhook 关闭 |
 
@@ -48,7 +48,7 @@ app/
   models/            ORM 模型
   services/          解析、提取、对象存储、任务仓库、导出、审计等
 migrations/versions/ 11 个 Alembic 修订
-tests/               34 个文件，364 项用例
+tests/               35 个文件，372 项用例
 scripts/             12 个门禁、演练与回填脚本
 frontend/            Vue 3 前端与 Playwright 用例
 docs/                21 篇设计文档、4 篇 ADR、1 份实施记录
@@ -162,10 +162,10 @@ cd frontend && E2E_COMPOSE=1 npx playwright test
 
 ```
 迁移门禁              退出码 0
-基础套件 PostgreSQL   364 项  0 失败 0 错误 0 跳过   201.1 秒
-基础套件 SQLite       364 项  0 失败 0 错误 0 跳过   198.4 秒
--m s3                 8 项    0 失败 0 错误 0 跳过   5.7 秒
--m broker             4 项    0 失败 0 错误 0 跳过   4.3 秒
+基础套件 PostgreSQL   372 项  0 失败 0 错误 0 跳过   171.0 秒
+基础套件 SQLite       372 项  0 失败 0 错误 0 跳过   186.5 秒
+-m s3                 8 项    0 失败 0 错误 0 跳过
+-m broker             4 项    0 失败 0 错误 0 跳过
 ```
 
 **门禁应串行执行。** 同机并行会造成假红：实测基础套件与集成套件并行时报 3 failed 加 11 errors，串行重跑全绿。并行的红不能当作代码结论。
