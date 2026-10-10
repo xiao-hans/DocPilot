@@ -99,11 +99,14 @@ export const INVOICE_FIELDS: FieldDefinition[] = [
 
 export class ApiError extends Error {
   readonly status: number
+  /** 后端关联 ID（NFR-005）。用户报错时可以直接把它给运维，用于定位日志与审计。 */
+  readonly requestId: string
 
-  constructor(status: number, message: string) {
-    super(message)
+  constructor(status: number, message: string, requestId = '') {
+    super(requestId ? `${message}（关联 ID ${requestId}）` : message)
     this.name = 'ApiError'
     this.status = status
+    this.requestId = requestId
   }
 }
 
@@ -121,6 +124,9 @@ async function extractDetail(res: Response): Promise<string> {
   return `请求失败（HTTP ${res.status}）`
 }
 
+/** 关联 ID 响应头（NFR-005），与后端 `app/request_context.py` 的常量一致。 */
+export const REQUEST_ID_HEADER = 'X-Request-ID'
+
 export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response
   try {
@@ -136,9 +142,12 @@ export async function requestJson<T>(path: string, init?: RequestInit): Promise<
     }
     res = await fetch(path, { ...init, headers, credentials: 'same-origin' })
   } catch {
+    // 连不上后端时没有响应头可读，关联 ID 留空——编造一个只会让人查到不存在的日志。
     throw new ApiError(0, '无法连接 DocAI 后端，请确认服务已启动')
   }
-  if (!res.ok) throw new ApiError(res.status, await extractDetail(res))
+  if (!res.ok) {
+    throw new ApiError(res.status, await extractDetail(res), res.headers.get(REQUEST_ID_HEADER) ?? '')
+  }
   return (await res.json()) as T
 }
 

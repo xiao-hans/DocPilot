@@ -25,11 +25,15 @@ test.describe('配额', () => {
     await expect(state).toHaveText(/已设置额度/)
     await expect(page.getByText(/已用文档/)).toBeVisible()
 
-    // 额度已经用满：下一次上传必须在服务端被挡下，并把原因显示出来
+    // 额度已经用满：下一次上传必须在服务端被挡下，并把原因显示出来。
+    // 同时断言错误文案里带上了后端关联 ID（NFR-005）：这是"用户报错时能给出 ID"
+    // 这条需求唯一能被浏览器验证的落点，所以挂在已有的真链路上而不是另造一条。
     await openView(page, '处理')
     await uploadFile(page, invoicePdf)
     await submitButton(page).click()
-    await expect(page.getByText(/配额已满/)).toBeVisible({ timeout: 15_000 })
+    const quotaError = page.getByText(/配额已满/)
+    await expect(quotaError).toBeVisible({ timeout: 15_000 })
+    await expect(quotaError).toContainText(/关联 ID [0-9a-f]{8,64}/)
 
     // 恢复不限，然后证明同样的上传能走通
     await openView(page, '配额')
