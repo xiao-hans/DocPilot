@@ -291,4 +291,32 @@ test.describe('DocAI 端到端', () => {
     expect(download.suggestedFilename()).toMatch(/\.xlsx$/)
     expect(downloadedSize(await download.path())).toBeGreaterThan(4096)
   })
+
+  /**
+   * 维护轮 M6：结果幕的"再处理一份"入口（`docs/06 §5.29`）。
+   *
+   * 缺口是 M5 修配额用例时撞出来的：上传成功后界面停在结果幕，只有"下载 Excel"，
+   * 要开新任务只能刷新页面。这条用例覆盖整条往返——成功后点按钮回到上传幕，
+   * 并且**真的能再传一份**（只断言"回到了上传幕"证明不了新任务能创建成功，
+   * 场景机切回来但状态没清干净的话，第二次上传会静默失败）。
+   */
+  test('结果幕：点"再处理一份"回到上传幕，并能再传一份', async ({ page }) => {
+    await signIn(page)
+    await startProcessing(page)
+    await waitForSuccess(page)
+
+    // 结果幕必须有这个入口；缺了它用户只能刷新页面
+    const again = page.getByRole('button', { name: '再处理一份' })
+    await expect(again).toBeVisible()
+    await again.click()
+
+    // 回到第一幕：上传卡片重新出现，结果表消失
+    await expect(dropZone(page)).toBeVisible()
+    await expect(page.getByText('处理成功', { exact: true })).toBeHidden()
+
+    // 真正再跑一份：这条才是"入口可用"的判据
+    await startProcessing(page)
+    await waitForSuccess(page)
+    await expect(page.getByRole('button', { name: '再处理一份' })).toBeVisible()
+  })
 })

@@ -215,7 +215,21 @@ watch(
                 </p>
               </div>
             </div>
-            <DownloadButton :job-id="jobId" />
+            <div class="flex items-center gap-3">
+              <DownloadButton :job-id="jobId" />
+              <!--
+                「再处理一份」（维护轮 M6）：结果幕原先只有下载入口，要开新任务只能刷新页面。
+                `onRetry()` 本来就在（失败分支的"重新选择文件"用它切回上传幕），这里复用同一个
+                处理函数，不新增状态。用次要按钮样式：主行动仍是下载。
+              -->
+              <button
+                type="button"
+                class="rounded-control border border-line px-4 py-2.5 font-display text-sm font-semibold text-secondary transition-colors duration-fast hover:border-brand hover:text-primary"
+                @click="onRetry"
+              >
+                再处理一份
+              </button>
+            </div>
           </div>
 
           <ResultPreview :rows="resultRows" :fields="fields" />
