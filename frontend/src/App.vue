@@ -17,6 +17,7 @@ import TeamPanel from './components/TeamPanel.vue'
 import AutomationPanel from './components/AutomationPanel.vue'
 import OperationsPanel from './components/OperationsPanel.vue'
 import QuotaPanel from './components/QuotaPanel.vue'
+import WebhooksPanel from './components/WebhooksPanel.vue'
 import AuthGate from './components/AuthGate.vue'
 import { INVOICE_FIELDS, type FieldDefinition, type ResultRow } from './api/client'
 import { useJobPolling } from './composables/useJobPolling'
@@ -29,17 +30,28 @@ type View =
   | 'templates'
   | 'team'
   | 'automation'
+  | 'webhooks'
   | 'quota'
   | 'operations'
 
 const view = ref<View>('process')
-const VIEWS: { value: View; label: string; platformOnly?: boolean; adminOnly?: boolean }[] = [
+const VIEWS: {
+  value: View
+  label: string
+  platformOnly?: boolean
+  adminOnly?: boolean
+  hiddenForReviewer?: boolean
+}[] = [
   { value: 'process', label: '处理' },
   { value: 'review', label: '复核' },
   { value: 'library', label: '文档库' },
   { value: 'templates', label: '模板' },
   { value: 'team', label: '团队' },
   { value: 'automation', label: '自动化' },
+  // Webhook 读面对 member 开放（排障要能看到失败投递），写面只 owner/admin；
+  // 与后端 `app/contexts/webhooks/api.py` 的 READ_ROLES/WRITE_ROLES 一致。
+  // `reviewer` 不在读面里，因此这里也不给入口——藏入口不是权限控制，真把关在后端。
+  { value: 'webhooks', label: 'Webhook', hiddenForReviewer: true },
   // 配额是租户自己的设置，写权限在后端 require_roles 上把关；
   // 这里按角色藏入口，是为了不让 member 看见一个点进去只能报错的按钮。
   { value: 'quota', label: '配额', adminOnly: true },
@@ -51,7 +63,10 @@ const VIEWS: { value: View; label: string; platformOnly?: boolean; adminOnly?: b
 function visibleViews(isPlatformAdmin: boolean, role: string) {
   const canManage = role === 'owner' || role === 'admin'
   return VIEWS.filter(
-    (item) => (!item.platformOnly || isPlatformAdmin) && (!item.adminOnly || canManage),
+    (item) =>
+      (!item.platformOnly || isPlatformAdmin) &&
+      (!item.adminOnly || canManage) &&
+      (!item.hiddenForReviewer || role !== 'reviewer'),
   )
 }
 const scene = ref<Scene>('upload')
@@ -169,6 +184,7 @@ watch(
       <TemplatesPanel v-else-if="view === 'templates'" :role="tenant.role" />
       <TeamPanel v-else-if="view === 'team'" :role="tenant.role" />
       <AutomationPanel v-else-if="view === 'automation'" :role="tenant.role" />
+      <WebhooksPanel v-else-if="view === 'webhooks'" :role="tenant.role" />
       <QuotaPanel v-else-if="view === 'quota'" :role="tenant.role" />
       <OperationsPanel v-else :platform-admin="user.is_platform_admin" />
     </main>

@@ -280,6 +280,28 @@ test.describe('DocAI 端到端', () => {
     await expect(errorLine).not.toHaveText('')
   })
 
+  /**
+   * 维护轮 M14：Webhook 管理界面（FR-041，`docs/06 §5.30`）。
+   *
+   * 端到端环境**不配** `WEBHOOK_MASTER_KEY`，所以这条用例验的是"能力关闭时界面把话说清楚"
+   * ——那正是这个界面最容易被写错的地方：默认配置下用户点进来会看到什么。
+   * 建端点、轮换密钥、看投递明细这些路径需要主密钥，属另一轮（见 `docs/06 §5.30` 的未覆盖清单）。
+   */
+  test('Webhook：未配置主密钥时界面说明关闭原因，而不是留一个点了报错的表单', async ({ page }) => {
+    await signIn(page)
+    await openView(page, 'Webhook')
+
+    await expect(page.getByRole('heading', { name: 'Webhook' })).toBeVisible()
+    const disabled = page.getByTestId('webhook-disabled')
+    await expect(disabled).toBeVisible()
+    await expect(disabled).toContainText('WEBHOOK_MASTER_KEY')
+    // 关闭时不该出现登记表单：让用户点一次再读 409 是把设计决定藏起来
+    await expect(page.getByTestId('create-webhook')).toBeHidden()
+    // 但读面仍然可用：空列表要说"还没有"，而不是一片空白
+    await expect(page.getByTestId('webhook-empty')).toBeVisible()
+    await expect(page.getByTestId('delivery-empty')).toBeVisible()
+  })
+
   test('Excel 下载：文件名与内容长度符合预期', async ({ page }) => {
     await signIn(page)
     await startProcessing(page)
