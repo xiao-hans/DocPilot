@@ -64,7 +64,8 @@ from app.models.persistent_job import PersistentJob  # noqa: E402
 
 MANIFEST_NAME = "manifest.json"
 ROWS_NAME = "snapshot.jsonl"
-MANIFEST_VERSION = 1
+PARENTS_NAME = "parents.jsonl"
+MANIFEST_VERSION = 2
 # 默认落在仓库之外：导出含客户数据，进版本控制就是事故。
 DEFAULT_OUT = Path.home() / "docpilot-snapshot-export"
 
@@ -94,11 +95,20 @@ def _reject_tracked_output(out: Path) -> None:
     )
 
 
-def export(out: Path, *, tenant_id: str | None = None) -> int:
+def export(out: Path, *, tenant_id: str | None = None, include_parents: bool = False) -> int:
+    """导出 `snapshot` 列；`include_parents=True` 时连父行一起导出，使导出自足。
+
+    M11 实测：只导出这一列时，把它读回数据库会撞外键——`processing_jobs.tenant_id`
+    引用 `tenants`，空库里没有父行。所以"能不能独立恢复"这个问题的答案是**取决于是否连父行一起导**。
+    两种模式都留着：默认最小（只保这一列，正对应门禁第 3 条要保的东西），
+    `--include-parents` 得到一份能在外键开启的库上完整重建的自足导出。
+    """
     out.mkdir(parents=True, exist_ok=True)
     rows_path = out / ROWS_NAME
+    parents_path = out / PARENTS_NAME
     digests: list[str] = []
     count = 0
+    parents: list[dict] = []
 
     with SessionLocal() as db:
         stmt = select(PersistentJob).order_by(PersistentJob.id)
@@ -122,6 +132,11 @@ def export(out: Path, *, tenant_id: str | None = None) -> int:
                 handle.write(json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n")
                 digests.append(_row_digest(row))
                 count += 1
+        if include_parents:
+            parents = _collect_parents(db, {row_tenant for row_tenant in _tenants_of(rows_path)})
+            with parents_path.open("w", encoding="utf-8", newline="\n") as handle:
+                for parent in parents:
+                    handle.write(json.dumps(parent, sort_keys=True, ensure_ascii=False) + "\n")
 
     manifest = {
         "manifest_version": MANIFEST_VERSION,
@@ -134,6 +149,10 @@ def export(out: Path, *, tenant_id: str | None = None) -> int:
         "rows_sha256": digests,
         "rows_file": ROWS_NAME,
         "rows_file_sha256": _file_digest(rows_path),
+        "include_parents": include_parents,
+        "parents_file": PARENTS_NAME if include_parents else None,
+        "parent_count": len(parents),
+        "parents_file_sha256": _file_digest(parents_path) if include_parents else None,
         "note": (
             "R6 删列门禁第 3 条的兜底导出（docs/20 §6）。它不是删列授权："
             "门禁四条需同时成立，其中负责人书面确认未满足。"
@@ -187,6 +206,75 @@ def verify(out: Path) -> int:
     return 0
 
 
+def _tenants_of(rows_path: Path) -> set[str]:
+    """从已写好的行文件里取出租户集合：父行导什么由行文件决定，不靠再查一遍库。"""
+    tenants: set[str] = set()
+    with rows_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if line:
+                tenants.add(json.loads(line)["tenant_id"])
+    return tenants
+
+
+def _collect_parents(db, tenant_ids: set[str]) -> list[dict]:
+    """导出满足引用完整性所需的最小父行集合。
+
+    只导 `tenants`：`processing_jobs` 的另一条外键是
+    `(tenant_id, template_version_id) → template_versions`，而该列**可空**——
+    导出的行里凡是带模板版本的，都要连对应版本一起导，否则外键仍会拒绝。
+    """
+    from app.contexts.templates.domain import TemplateVersion
+    from app.models.account import Tenant
+
+    parents: list[dict] = []
+    for tenant in db.scalars(select(Tenant).where(Tenant.id.in_(sorted(tenant_ids)))).all():
+        parents.append(
+            {
+                "kind": "tenant",
+                "id": tenant.id,
+                "name": tenant.name,
+                "status": tenant.status,
+                "created_at": _iso(tenant.created_at),
+            }
+        )
+    # 行文件里出现过的模板版本：不导会让带模板版本的行走不进外键。
+    version_ids = {
+        version_id
+        for version_id in _template_version_ids(db, tenant_ids)
+    }
+    for version in db.scalars(
+        select(TemplateVersion).where(TemplateVersion.id.in_(sorted(version_ids)))
+    ).all():
+        parents.append(
+            {
+                "kind": "template_version",
+                "id": version.id,
+                "template_id": version.template_id,
+                "tenant_id": version.tenant_id,
+                "revision": version.revision,
+                "fields": version.fields,
+                "published_at": _iso(version.published_at),
+            }
+        )
+    return parents
+
+
+def _template_version_ids(db, tenant_ids: set[str]) -> set[str]:
+    from app.models.persistent_job import PersistentJob as Job
+
+    rows = db.execute(
+        select(Job.template_version_id).where(
+            Job.tenant_id.in_(sorted(tenant_ids)), Job.template_version_id.is_not(None)
+        )
+    ).all()
+    return {row[0] for row in rows if row[0]}
+
+
+def _iso(value) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
 def _file_digest(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -220,12 +308,16 @@ def replay(out: Path, target_url: str) -> int:
     列**不构成一次可独立恢复的备份**——它保住的是这一列的内容，把它读回数据库还需要周围的父行。
     兜底文件的价值在于"卷副本坏了时这一列还能读出来"，不在于"这份文件能单独把库建回来"。
 
+    M12 给这个结论补上了另一面：导出时带 `--include-parents` 的话，父行在
+    `parents.jsonl` 里，replay **在外键开启的情况下**也能完整重建——两条路径都留着，
+    走哪条由导出文件自己决定（看清单里的 `include_parents`）。
+
     处理顺序刻意如此：**先尝试关掉外键强制**（PostgreSQL 的 `session_replication_role=replica`、
     SQLite 的 `PRAGMA foreign_keys=OFF`），这时一个父行都不伪造；权限不足时才回退到
     "给导出里出现的每个租户插一条最小桩行"。走了哪条路会打印出来——回退路径下目标库里
     多了导出本身没有的行，读者应当知道。
     """
-    from sqlalchemy import create_engine, insert, text
+    from sqlalchemy import create_engine, insert
     from sqlalchemy.engine import make_url
     from sqlalchemy.orm import sessionmaker
 
@@ -241,18 +333,23 @@ def replay(out: Path, target_url: str) -> int:
     records = [
         json.loads(line) for line in rows_path.read_text(encoding="utf-8").splitlines() if line.strip()
     ]
+    parents = _read_parents(out, manifest)
 
     dialect = make_url(target_url).drivername.split("+")[0]
     engine = create_engine(target_url)
     Session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
-    disabled = _disable_fk(engine, dialect)
+    # 有父行文件时**不动外键设置**：那正是"这份导出自足"的判据——
+    # 靠关掉约束才能装进去的导出，不能算能独立恢复。
+    disabled = False if parents else _disable_fk(engine, dialect)
     stubbed = 0
     loaded = 0
     mismatches: list[str] = []
     try:
         with Session() as db:
-            if not disabled:
+            if parents:
+                _insert_parents(db, parents)
+            elif not disabled:
                 stubbed = _stub_parents(db, records)
             for row in records:
                 db.execute(
@@ -288,9 +385,60 @@ def replay(out: Path, target_url: str) -> int:
         for line in mismatches[:20]:
             print(f"  - {line}")
         return 1
-    how = "外键强制已关闭，未伪造任何父行" if disabled else f"回退路径：为 {stubbed} 个租户插入最小桩行"
+    if parents:
+        how = f"自足导出：先装 {len(parents)} 条父行，外键保持开启"
+    elif disabled:
+        how = "外键强制已关闭，未伪造任何父行"
+    else:
+        how = f"回退路径：为 {stubbed} 个租户插入最小桩行"
     print(f"REPLAY RESULT: PASS（{loaded} 行写入 {target_name} 后逐行读回一致；{how}）")
     return 0
+
+
+def _read_parents(out: Path, manifest: dict) -> list[dict]:
+    """读父行文件；清单声明带父行但文件缺失时直接失败，不静默降级。"""
+    if not manifest.get("include_parents"):
+        return []
+    parents_path = out / PARENTS_NAME
+    if not parents_path.is_file():
+        raise SystemExit(f"清单声明 include_parents，但缺少 {PARENTS_NAME}：{out} 不完整")
+    return [
+        json.loads(line) for line in parents_path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
+
+
+def _insert_parents(db, parents: list[dict]) -> None:
+    """按父行文件重建 `tenants` 与 `template_versions`。顺序固定：父的父先装。"""
+    from app.contexts.templates.domain import TemplateVersion
+    from app.models.account import Tenant
+
+    for kind in ("tenant", "template_version"):
+        for parent in [p for p in parents if p["kind"] == kind]:
+            if kind == "tenant":
+                db.add(
+                    Tenant(
+                        id=parent["id"],
+                        name=parent["name"],
+                        status=parent["status"],
+                        created_at=datetime.fromisoformat(parent["created_at"]),
+                    )
+                )
+            else:
+                db.add(
+                    TemplateVersion(
+                        id=parent["id"],
+                        template_id=parent["template_id"],
+                        tenant_id=parent["tenant_id"],
+                        revision=parent["revision"],
+                        fields=parent["fields"],
+                        published_at=(
+                            datetime.fromisoformat(parent["published_at"])
+                            if parent["published_at"]
+                            else None
+                        ),
+                    )
+                )
+    db.flush()
 
 
 def _disable_fk(engine, dialect: str) -> bool:
@@ -350,6 +498,11 @@ def main() -> int:
     )
     parser.add_argument("--tenant", default=None, help="只导出该租户的任务；默认全部")
     parser.add_argument(
+        "--include-parents",
+        action="store_true",
+        help="连满足引用完整性的父行（tenants、template_versions）一起导出，使导出自足",
+    )
+    parser.add_argument(
         "--target-url",
         default=None,
         help="--replay 的目标库连接串；库名必须是一次性库（<名称>_test 或 test_<名称>）",
@@ -364,7 +517,7 @@ def main() -> int:
             return 1
         return replay(args.replay, args.target_url)
     _reject_tracked_output(args.out)
-    return export(args.out, tenant_id=args.tenant)
+    return export(args.out, tenant_id=args.tenant, include_parents=args.include_parents)
 
 
 if __name__ == "__main__":
