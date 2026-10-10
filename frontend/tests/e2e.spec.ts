@@ -20,6 +20,7 @@ import {
   submitButton,
   waitForSuccess,
 } from './helpers'
+import { WEBHOOK_ENABLED } from './global-setup'
 
 /**
  * 阶段 G5 端到端用例（TC-E2E-001 与各管理面）。
@@ -281,25 +282,74 @@ test.describe('DocAI 端到端', () => {
   })
 
   /**
-   * 维护轮 M14：Webhook 管理界面（FR-041，`docs/06 §5.30`）。
+   * 维护轮 M14/M15：Webhook 管理界面（FR-041，`docs/06 §5.30`）。
    *
-   * 端到端环境**不配** `WEBHOOK_MASTER_KEY`，所以这条用例验的是"能力关闭时界面把话说清楚"
-   * ——那正是这个界面最容易被写错的地方：默认配置下用户点进来会看到什么。
-   * 建端点、轮换密钥、看投递明细这些路径需要主密钥，属另一轮（见 `docs/06 §5.30` 的未覆盖清单）。
+   * 这条用例按环境走两面，**两面都必须被测到**，只是不在同一次运行里：
+   * - 默认（`E2E_WEBHOOK` 未设，不配主密钥）：验"能力关闭时界面把话说清楚"。
+   *   这是这个界面最容易被写错的地方——默认配置下用户点进来会看到什么。
+   * - `E2E_WEBHOOK=1`（配主密钥）：验写路径——建端点、密钥只显示一次、暂停、轮换、删除。
+   *
+   * 为什么用条件而不是两条独立用例：`E2E_WEBHOOK` 决定的是**后端进程启动时的配置**，
+   * 用例没法在运行中途改它。两条独立用例里必有一条会因环境不符而失败，
+   * 那会让"套件全绿"这件事失去意义。
    */
-  test('Webhook：未配置主密钥时界面说明关闭原因，而不是留一个点了报错的表单', async ({ page }) => {
+  test('Webhook：关闭时说明原因；开启时写路径可用', async ({ page }, testInfo) => {
+    // 把实际走的分支写进报告：两种形态都"全绿"时，光看结果分不出哪一面被验过，
+    // 而"E2E_WEBHOOK 没传进 worker、静默走了关闭分支"正是这条用例最可能的假绿。
+    testInfo.annotations.push({
+      type: 'webhook-branch',
+      description: WEBHOOK_ENABLED ? 'enabled: 写路径' : 'disabled: 关闭姿态',
+    })
     await signIn(page)
     await openView(page, 'Webhook')
-
     await expect(page.getByRole('heading', { name: 'Webhook' })).toBeVisible()
-    const disabled = page.getByTestId('webhook-disabled')
-    await expect(disabled).toBeVisible()
-    await expect(disabled).toContainText('WEBHOOK_MASTER_KEY')
-    // 关闭时不该出现登记表单：让用户点一次再读 409 是把设计决定藏起来
-    await expect(page.getByTestId('create-webhook')).toBeHidden()
-    // 但读面仍然可用：空列表要说"还没有"，而不是一片空白
-    await expect(page.getByTestId('webhook-empty')).toBeVisible()
-    await expect(page.getByTestId('delivery-empty')).toBeVisible()
+
+    if (!WEBHOOK_ENABLED) {
+      const disabled = page.getByTestId('webhook-disabled')
+      await expect(disabled).toBeVisible()
+      await expect(disabled).toContainText('WEBHOOK_MASTER_KEY')
+      // 关闭时不该出现登记表单：让用户点一次再读 409 是把设计决定藏起来
+      await expect(page.getByTestId('create-webhook')).toBeHidden()
+      // 但读面仍然可用：空列表要说"还没有"，而不是一片空白
+      await expect(page.getByTestId('webhook-empty')).toBeVisible()
+      await expect(page.getByTestId('delivery-empty')).toBeVisible()
+      return
+    }
+
+    // 开启时：关闭提示不出现，登记表单可用
+    await expect(page.getByTestId('webhook-disabled')).toBeHidden()
+    const create = page.getByTestId('create-webhook')
+    await expect(create).toBeVisible()
+
+    const host = `hooks-${Date.now().toString(36)}.example.com`
+    await page.getByLabel('回调地址').fill(`https://${host}/docpilot`)
+    await page.getByLabel('备注').fill('端到端订阅')
+    await page.getByRole('checkbox', { name: 'job.succeeded' }).check()
+    await create.click()
+
+    // 密钥只显示一次：明文与指纹同时出现，且列表里只有主机名
+    const secretBlock = page.getByTestId('webhook-secret')
+    await expect(secretBlock).toBeVisible()
+    await expect(secretBlock).toContainText('只显示这一次')
+    const secretText = (await secretBlock.innerText()).match(/whsec_[0-9a-f]+/)
+    expect(secretText, '明文密钥应当出现在只显示一次的那一块里').not.toBeNull()
+    await expect(page.getByText(host, { exact: false })).toBeVisible()
+
+    // 暂停：状态变"已暂停"，提示说明不再投递
+    await page.getByRole('button', { name: '暂停' }).click()
+    await expect(page.getByText('端点已暂停，不再投递')).toBeVisible()
+
+    // 轮换：密钥版本推进，新明文再次只显示一次且与旧的不同
+    await page.getByRole('button', { name: '轮换密钥' }).click()
+    await expect(page.getByText(/密钥已轮换到 v2/)).toBeVisible()
+    const rotated = (await secretBlock.innerText()).match(/whsec_[0-9a-f]+/)
+    expect(rotated?.[0], '轮换后的密钥应当与创建时不同').not.toBe(secretText?.[0])
+    await expect(page.getByText('v2', { exact: true })).toBeVisible()
+
+    // 删除：端点从列表里消失
+    await page.getByRole('button', { name: '删除' }).click()
+    await expect(page.getByText('端点已删除')).toBeVisible()
+    await expect(page.getByText(host, { exact: false })).toBeHidden()
   })
 
   test('Excel 下载：文件名与内容长度符合预期', async ({ page }) => {

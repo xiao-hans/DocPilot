@@ -47,6 +47,9 @@ export const BACKEND_PORT = Number(process.env.E2E_BACKEND_PORT ?? (APP_CONTAINE
 export const BACKEND_ORIGIN = `http://127.0.0.1:${BACKEND_PORT}`
 export const FRONTEND_ORIGIN = 'http://127.0.0.1:5173'
 export const BOOTSTRAP_TOKEN = 'e2e-platform-bootstrap-token'
+/** 仅在 `E2E_WEBHOOK=1` 时注入；默认不配，让关闭姿态留在默认套件里。 */
+export const WEBHOOK_MASTER_KEY = 'e2e-webhook-master-key-please-rotate'
+export const WEBHOOK_ENABLED = process.env.E2E_WEBHOOK === '1'
 /** 一次性数据目录内的"平台已初始化"标记：随目录一起重建，因此不会跨运行残留。 */
 export const READY_MARKER = path.join(e2eDataDir, 'platform-ready.json')
 const SERVERS_FILE = path.join(tmpDir, 'servers.json')
@@ -282,6 +285,12 @@ export default async function globalSetup(): Promise<void> {
         AUTH_COOKIE_SECURE: 'false',
         EXTRACTOR_MODE: 'mock',
         BOOTSTRAP_TOKEN,
+        // Webhook 主密钥只在 `E2E_WEBHOOK=1` 时配（维护轮 M15）。
+        //
+        // 默认**不配**是刻意的：默认姿态下界面应当说明"能力已关闭"，那是最容易被写错的地方，
+        // 所以它留在默认套件里（TC-E2E-005）。配了主密钥才能测写路径（建端点、轮换、暂停、删除），
+        // 而"配了主密钥"这件事必须由显式开关触发——否则默认套件会静默失去关闭姿态的覆盖。
+        ...(process.env.E2E_WEBHOOK === '1' ? { WEBHOOK_MASTER_KEY: WEBHOOK_MASTER_KEY } : {}),
         // 队列保持关闭：端到端跑的是"上传即处理完"的进程内基线，起 Worker 属于另一条链路。
         ...(compose
           ? {
