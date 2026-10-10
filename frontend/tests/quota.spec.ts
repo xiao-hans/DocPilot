@@ -1,5 +1,13 @@
 import { expect, test } from '@playwright/test'
-import { invoicePdf, openView, signIn, startProcessing, submitButton, uploadFile } from './helpers'
+import {
+  invoicePdf,
+  openView,
+  signIn,
+  startProcessing,
+  submitButton,
+  uploadFile,
+  waitForSuccess,
+} from './helpers'
 
 /**
  * 配额管理界面（FR-042，阶段 G22）。
@@ -7,10 +15,30 @@ import { invoicePdf, openView, signIn, startProcessing, submitButton, uploadFile
  * 这条用例存在的意义不是"能填数字"，而是证明界面背后那道判定真的在链路上生效：
  * 把文档额度压到 1，随后一次真实上传必须被拒且**原因出现在界面上**。
  * 结束时恢复不限，避免把额度留给后面的用例（套件是串行的，共用同一个后端）。
+ *
+ * 维护轮 M5（2026-10-10）修掉一处隐含顺序依赖：本用例原先假设"租户里已经有文档"，
+ * 而文档额度压到 1 之后要上传第 2 份才会被拒——单独跑（库是空的）时上传的是第 1 份，
+ * 正好在额度内，于是"配额已满"永远不出现。现在先上传一份把用量顶到 1，前提由自己建立，
+ * 单跑与整轮跑给出同样的结论。
+ *
+ * 顺带记一处本轮实测到的**产品缺口**（未修，不在本轮范围）：上传成功后处理页停在结果幕，
+ * 界面上只有"下载 Excel"，没有"再处理一份"的入口——要开始下一个任务只能刷新页面。
+ * 本用例因此用 `page.reload()` 回到上传幕；这是真实用户会做的动作，但也说明那个入口该补。
  */
 test.describe('配额', () => {
   test('默认不限 → 设额度 → 上传被拒并给出原因 → 恢复不限', async ({ page }) => {
     await signIn(page)
+
+    // 先建立前提：额度设成 1 之后要上传第 2 份才会被拒，所以库里得先有一份。
+    // 这一步同时也验证了"默认不限时上传正常"。
+    await openView(page, '处理')
+    await startProcessing(page)
+    await waitForSuccess(page)
+
+    // 回到上传幕：结果幕没有"再处理一份"入口，只能刷新（见文件头那条缺口记录）。
+    await page.reload()
+    await expect(page.getByRole('button', { name: '处理' })).toBeVisible()
+
     await openView(page, '配额')
 
     await expect(page.getByText('额度由租户管理员设定，默认不限')).toBeVisible()
