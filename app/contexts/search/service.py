@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.contexts.search import repository
+from app.contexts.search.backend import get_search_backend
 from app.contexts.search.domain import DEFAULT_FIELD_NAME, SEARCH_KINDS, SearchEntry
 from app.errors import AccessError
 from app.services.text_safety import without_nul
@@ -40,6 +41,26 @@ def _flatten(value: Any) -> list[Any]:
     return [value]
 
 
+def build_wanted_entries(
+    *, filename: str, text: str, values: dict[str, Any]
+) -> dict[tuple[str, str], str]:
+    """把一次重建的"来源"整理成 `(kind, field_name) → content`。
+
+    抽出来是为了让默认后端（`backend.SqlSearchBackend`）与 service 共用同一份来源规则：
+    复制一份会让"来源有哪些"这件事出现两个权威，而它是 `docs/15 §5` 定下的语义
+    （文件名/原文/字段值三类同事务重建）。
+    """
+    wanted: dict[tuple[str, str], str] = {
+        ("filename", DEFAULT_FIELD_NAME): filename,
+        ("text", DEFAULT_FIELD_NAME): text,
+    }
+    for name, value in values.items():
+        wanted[("field", str(name)[:MAX_FIELD_NAME_CHARS])] = _content_of(value)
+    # PostgreSQL 的 text 与 json 都拒绝 NUL 字节，而 SQLite 照收；索引内容必须在入库前清掉，
+    # 否则一条脏文本会让整批写入回滚。
+    return {key: without_nul(content) for key, content in wanted.items()}
+
+
 def reindex_version(
     db: Session,
     *,
@@ -51,42 +72,20 @@ def reindex_version(
     values: dict[str, Any],
     now: datetime,
 ) -> None:
-    """重建一个文件版本的索引：同来源覆盖、缺失来源清除，行数不随重跑增长。"""
-    wanted: dict[tuple[str, str], str] = {
-        ("filename", DEFAULT_FIELD_NAME): filename,
-        ("text", DEFAULT_FIELD_NAME): text,
-    }
-    for name, value in values.items():
-        wanted[("field", str(name)[:MAX_FIELD_NAME_CHARS])] = _content_of(value)
+    """重建一个文件版本的索引：同来源覆盖、缺失来源清除，行数不随重跑增长。
 
-    existing = {
-        (entry.kind, entry.field_name): entry
-        for entry in repository.entries_for_version(db, tenant_id, document_version_id)
-    }
-    for (kind, field_name), content in wanted.items():
-        # PostgreSQL 的 text 与 json 都拒绝 NUL 字节，而 SQLite 照收；索引内容必须在入库前清掉，
-        # 否则一条脏文本会让整批写入回滚。
-        content = without_nul(content)
-        entry = existing.get((kind, field_name))
-        if entry is None:
-            db.add(
-                SearchEntry(
-                    id=uuid.uuid4().hex,
-                    tenant_id=tenant_id,
-                    document_id=document_id,
-                    document_version_id=document_version_id,
-                    kind=kind,
-                    field_name=field_name,
-                    content=content,
-                    updated_at=now,
-                )
-            )
-        else:
-            entry.content = content
-            entry.updated_at = now
-    for (kind, field_name), entry in existing.items():
-        if (kind, field_name) not in wanted:
-            db.delete(entry)
+    经后端契约转发（`docs/22`），因此换成别的检索后端时调用方不必改。
+    """
+    get_search_backend().reindex(
+        db,
+        tenant_id=tenant_id,
+        document_id=document_id,
+        document_version_id=document_version_id,
+        filename=filename,
+        text=text,
+        values=values,
+        now=now,
+    )
 
 
 def _like_pattern(term: str) -> str:
@@ -126,7 +125,7 @@ def search(
     if kind is not None and kind != "all" and kind not in SEARCH_KINDS:
         raise AccessError(422, "kind 非法")
 
-    total, rows = repository.search_entries(
+    total, rows = get_search_backend().query(
         db,
         tenant_id=tenant_id,
         pattern=_like_pattern(term.lower()),

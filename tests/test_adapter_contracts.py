@@ -273,19 +273,21 @@ def test_unreplaced_factories_still_build_the_defaults():
         get_extractor("bogus")
 
 
-def test_search_backend_has_no_factory_and_that_is_recorded():
-    """NFR-004 把"搜索后端"也列为可替换项，但项目里没有搜索后端抽象。
+def test_search_backend_factory_exists_now(monkeypatch):
+    """NFR-004 把"搜索后端"列为可替换项。**维护轮 M16 已补上抽象**（`docs/22`）。
 
-    这是一条**记录现状**的用例，不是验收用例：检索走 `search_entries()` 直接查
-    `search_entries` 表（`app/contexts/search/repository.py`），换后端要改仓储函数，
-    没有接口可注入。把它写成断言，是为了让"搜索后端可替换"这句需求不被默认读成已满足；
-    真要做替换点，应新增抽象并同时改这条用例与 `docs/07 NFR-004`。
+    这条用例从"记录缺口"改成"记录已补"，并按 M2 的教训验工厂**在生产路径上生效**：
+    只断言工厂返回了实现证明不了 service 真的用它。搜索后端的完整契约在
+    `tests/test_search_backend.py`，这里只钉住"缺口已闭合"这件事。
     """
-    from app.contexts import search
+    from app.contexts.search import backend as search_backend
+    from app.contexts.search.backend import SearchBackend, SqlSearchBackend
 
-    assert not hasattr(search, "get_search_backend"), (
-        "搜索后端已经出现工厂：请更新 TC-FUNC-060 与 docs/07 NFR-004 的状态"
+    assert hasattr(search_backend, "get_search_backend"), (
+        "搜索后端工厂消失了：请同步更新 TC-FUNC-060 与 docs/07 NFR-004"
     )
+    assert issubclass(SqlSearchBackend, SearchBackend)
+    assert isinstance(search_backend.get_search_backend(), SearchBackend)
 
 
 def test_object_storage_contract_is_satisfied_by_both_implementations(tmp_path: Path):

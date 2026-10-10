@@ -107,6 +107,11 @@ OCR_DPI = _env_int("OCR_DPI", 200)
 # mock | llm
 EXTRACTOR_MODE = os.getenv("EXTRACTOR_MODE", "mock")
 
+# ---- 检索后端（NFR-004，docs/22）----
+# 当前只有 sql（search_entries 表 + lower(content) LIKE）。未知值在
+# `get_search_backend()` 里显式抛错，不静默退回默认实现。
+SEARCH_BACKEND = (os.getenv("SEARCH_BACKEND", "sql").strip().lower() or "sql")
+
 # OpenAI 兼容接口（DeepSeek / 千问 / OpenAI 等）
 AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.deepseek.com/v1")
 AI_API_KEY = os.getenv("AI_API_KEY", "")
