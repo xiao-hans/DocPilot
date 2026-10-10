@@ -9,9 +9,9 @@
 | 项 | 值 |
 |---|---|
 | 交付阶段 | 阶段 A–F 于 2026-10-02 交付；阶段 G0–G28 交付至 2026-10-07 |
-| 迁移 head | `d5e2b74c0a19`（快照退役 R1），单线性 11 步 |
-| 后端用例 | 372 项（PostgreSQL 与 SQLite 基础套件各 372 项，0 失败 0 跳过） |
+| 后端用例 | 398 项（PostgreSQL 与 SQLite 基础套件各 398 项，0 失败 0 跳过） |
 | 浏览器用例 | 13 项（Playwright，系统 Chrome） |
+| 迁移 head | `e1f4c7a29d63`（审计请求关联 ID），单线性 12 步 |
 | 默认基线 | `BROKER_URL` 空、`STORAGE_BACKEND=local`、`EXTRACTOR_MODE=mock`、Webhook 关闭 |
 
 ## 核心流程
@@ -48,7 +48,7 @@ app/
   models/            ORM 模型
   services/          解析、提取、对象存储、任务仓库、导出、审计等
 migrations/versions/ 11 个 Alembic 修订
-tests/               35 个文件，372 项用例
+tests/               36 个文件，398 项用例
 scripts/             12 个门禁、演练与回填脚本
 frontend/            Vue 3 前端与 Playwright 用例
 docs/                21 篇设计文档、4 篇 ADR、1 份实施记录
@@ -162,8 +162,8 @@ cd frontend && E2E_COMPOSE=1 npx playwright test
 
 ```
 迁移门禁              退出码 0
-基础套件 PostgreSQL   372 项  0 失败 0 错误 0 跳过   171.0 秒
-基础套件 SQLite       372 项  0 失败 0 错误 0 跳过   186.5 秒
+基础套件 PostgreSQL   398 项  0 失败 0 错误 0 跳过   147.9 秒
+基础套件 SQLite       398 项  0 失败 0 错误 0 跳过   141.8 秒
 -m s3                 8 项    0 失败 0 错误 0 跳过
 -m broker             4 项    0 失败 0 错误 0 跳过
 ```

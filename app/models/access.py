@@ -75,6 +75,9 @@ class AuditEvent(Base):
     action: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     object_type: Mapped[str] = mapped_column(String(32), nullable=False)
     object_id: Mapped[str | None] = mapped_column(String(32))
+    # 请求关联 ID（NFR-005）：审计是"这条记录出自哪次请求"的权威来源。
+    # 可空且不给默认：历史行没有这个值，猜一个等于编造关联。
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     # 列名保持 metadata，属性避开 declarative 保留的 Base.metadata。
     metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(

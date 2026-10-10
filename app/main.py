@@ -23,6 +23,7 @@ from app.contexts.templates import api as templates_api
 from app.contexts.webhooks import api as webhooks_api
 from app.db import SessionLocal, initialize_development_schema
 from app.errors import AccessError
+from app.request_context import RequestIdMiddleware, configure_logging
 from app.services.job_manager import get_job_manager
 
 
@@ -44,6 +45,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="DocPilot", lifespan=lifespan)
+# 关联 ID 中间件先于路由挂载（NFR-005）：它在每个请求上建立上下文并在响应头回填，
+# 下游的审计写入与日志过滤器都从该上下文取 ID。
+app.add_middleware(RequestIdMiddleware)
 app.include_router(auth.router)
 app.include_router(tenants.router)
 app.include_router(workspace_jobs.router)
@@ -94,4 +98,7 @@ async def index():
 
 
 if __name__ == "__main__":
+    # API 进程也走同一份日志配置：uvicorn 自带的 access 日志没有关联 ID，
+    # 而我们自己的 logger 需要那个过滤器，否则 `%(request_id)s` 会打成异常。
+    configure_logging()
     uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=False)

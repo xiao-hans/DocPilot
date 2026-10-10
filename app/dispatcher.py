@@ -17,6 +17,7 @@ from app.contexts.processing import service as processing
 from app.contexts.processing.broker import AmqpTransport
 from app.contexts.processing.dispatcher import Dispatcher
 from app.db import SessionLocal
+from app.request_context import configure_logging
 
 logger = logging.getLogger("docpilot.dispatcher.main")
 
@@ -34,9 +35,7 @@ def run_round(transport: AmqpTransport, runner: Dispatcher) -> dict[str, int]:
 def main() -> None:
     if not QUEUE_ENABLED:
         raise SystemExit("未配置 BROKER_URL：队列模式未启用，任务仍由 API 进程内执行")
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
-    )
+    configure_logging()
     transport = AmqpTransport()
     runner = Dispatcher(transport)
     while True:

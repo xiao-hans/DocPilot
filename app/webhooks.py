@@ -12,13 +12,12 @@ import threading
 from app.config import WEBHOOK_MASTER_KEY, WEBHOOK_POLL_SECONDS
 from app.contexts.webhooks.delivery import HttpxTransport, deliver_round
 from app.contexts.webhooks.service import require_master_key
+from app.request_context import configure_logging
 
 
 def main() -> None:
     require_master_key()  # 没配主密钥就抛，不让进程带着"永远发不出去"的状态长跑
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
-    )
+    configure_logging()
     transport = HttpxTransport()
     logger = logging.getLogger("docpilot.webhooks.main")
     logger.info("Webhook 投递已启动（轮询 %s 秒）", WEBHOOK_POLL_SECONDS)

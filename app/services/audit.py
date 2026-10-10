@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
 from app.models.access import AuditEvent
+from app.request_context import current as current_request_id
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +78,16 @@ def new_event(
     object_type: str,
     object_id: str | None = None,
     metadata: Mapping[str, Any] | None = None,
+    request_id: str | None = None,
 ) -> AuditEvent:
-    """构造事件对象但不写库，便于调用方并入同一事务。"""
+    """构造事件对象但不写库，便于调用方并入同一事务。
+
+    `request_id` 默认从当前请求上下文取（NFR-005）：调用方不必逐个传参，
+    而 Worker、派发器、脚本这些没有请求上下文的地方取到 None，不会继承某个
+    已结束请求的 ID。显式传值优先，供"一个请求内的动作要挂到另一个 ID"这类
+    极少数场景使用。
+    """
+    resolved = request_id if request_id is not None else current_request_id()
     return AuditEvent(
         id=uuid.uuid4().hex,
         tenant_id=tenant_id,
@@ -86,6 +95,7 @@ def new_event(
         action=action,
         object_type=object_type,
         object_id=object_id,
+        request_id=resolved,
         metadata_=_payload(action, metadata),
         created_at=datetime.now(timezone.utc),
     )

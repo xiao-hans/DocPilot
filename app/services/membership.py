@@ -348,6 +348,8 @@ def list_audit_events(
             "action": event.action,
             "object_type": event.object_type,
             "object_id": event.object_id,
+            # 关联 ID（NFR-005）：历史行为 null，不编造值。
+            "request_id": event.request_id,
             "metadata": event.metadata_,
             "created_at": iso_utc(event.created_at),
         }

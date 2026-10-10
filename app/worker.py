@@ -13,6 +13,7 @@ from typing import Any
 from app.config import DISPATCH_POLL_SECONDS, JOB_LEASE_SECONDS, QUEUE_ENABLED
 from app.contexts.processing import dispatch
 from app.contexts.processing.broker import AmqpTransport
+from app.request_context import configure_logging
 from app.services.job_manager import get_job_manager
 
 logger = logging.getLogger("docpilot.worker")
@@ -68,9 +69,7 @@ def handle(payload: Any) -> bool:
 def main() -> None:
     if not QUEUE_ENABLED:
         raise SystemExit("未配置 BROKER_URL：任务仍由 API 进程内执行，无需启动 Worker")
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
-    )
+    configure_logging()
     transport = AmqpTransport()
     while True:
         try:
