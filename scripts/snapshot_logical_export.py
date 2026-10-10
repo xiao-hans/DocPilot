@@ -128,12 +128,19 @@ def export(out: Path, *, tenant_id: str | None = None, include_parents: bool = F
                     # 所以清洗只会丢数据而不会提高可读性——一份被改过的兜底导出比没有更危险，
                     # 因为它看起来是完整的。
                     "snapshot": job.snapshot,
+                    # R1 规范化列（维护轮 M13）。**导出这三列不是可选的美化**：
+                    # R5 切读之后 `JobRepository._rebuild()` 的 `fields` 与 `progress`
+                    # 取自这两列，不再读快照。只导 `snapshot` 的话，replay 能装进去、
+                    # 但任务详情重建不出来——实测报 `缺 fields、progress`。
+                    # 因此"这份导出能重建任务"要求它带上这两列。
+                    "field_definitions": job.field_definitions,
+                    "progress": job.progress,
                 }
                 handle.write(json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n")
                 digests.append(_row_digest(row))
                 count += 1
         if include_parents:
-            parents = _collect_parents(db, {row_tenant for row_tenant in _tenants_of(rows_path)})
+            parents = _collect_parents(db, _tenants_of(rows_path), _job_ids_of(rows_path))
             with parents_path.open("w", encoding="utf-8", newline="\n") as handle:
                 for parent in parents:
                     handle.write(json.dumps(parent, sort_keys=True, ensure_ascii=False) + "\n")
@@ -144,6 +151,7 @@ def export(out: Path, *, tenant_id: str | None = None, include_parents: bool = F
         "source_database": _source_label(),
         "table": PersistentJob.__tablename__,
         "column": "snapshot",
+        "columns": ["snapshot", "field_definitions", "progress"],
         "tenant_filter": tenant_id,
         "row_count": count,
         "rows_sha256": digests,
@@ -217,15 +225,23 @@ def _tenants_of(rows_path: Path) -> set[str]:
     return tenants
 
 
-def _collect_parents(db, tenant_ids: set[str]) -> list[dict]:
-    """导出满足引用完整性所需的最小父行集合。
+def _collect_parents(db, tenant_ids: set[str], job_ids: set[str]) -> list[dict]:
+    """导出重建 `Job` 所需的全部依赖行（维护轮 M13 从"满足外键"扩到"能重建任务对象"）。
 
-    只导 `tenants`：`processing_jobs` 的另一条外键是
-    `(tenant_id, template_version_id) → template_versions`，而该列**可空**——
-    导出的行里凡是带模板版本的，都要连对应版本一起导，否则外键仍会拒绝。
+    M12 之前只导 `tenants` 与 `template_versions`——那只够让 `processing_jobs` 那一行**插得进去**。
+    M13 扩到 `documents` / `document_versions` / `job_attempts` / `extraction_results`，
+    因为 `JobRepository._rebuild()` 是从这些表重建 `Job` 的：版本行给 `files[]`、尝试行给
+    `warnings`/`error`、结果行给 `result`。少任何一张，replay 之后任务详情都重建不出来。
+
+    依赖顺序即列表顺序，`_insert_parents` 按 `kind` 顺序装：
+    `tenants` → `documents` → `document_versions` → `job_attempts` / `extraction_results`。
     """
+    from app.contexts.processing.domain import JobAttempt
+    from app.contexts.review.domain import ExtractionResult
     from app.contexts.templates.domain import TemplateVersion
     from app.models.account import Tenant
+    from app.models.document import Document, DocumentVersion
+    from app.models.persistent_job import PersistentJob as Job
 
     parents: list[dict] = []
     for tenant in db.scalars(select(Tenant).where(Tenant.id.in_(sorted(tenant_ids)))).all():
@@ -238,11 +254,9 @@ def _collect_parents(db, tenant_ids: set[str]) -> list[dict]:
                 "created_at": _iso(tenant.created_at),
             }
         )
-    # 行文件里出现过的模板版本：不导会让带模板版本的行走不进外键。
-    version_ids = {
-        version_id
-        for version_id in _template_version_ids(db, tenant_ids)
-    }
+
+    # 模板版本：`processing_jobs` 与 `extraction_results` 都有指向它的外键。
+    version_ids = _template_version_ids(db, job_ids)
     for version in db.scalars(
         select(TemplateVersion).where(TemplateVersion.id.in_(sorted(version_ids)))
     ).all():
@@ -257,18 +271,139 @@ def _collect_parents(db, tenant_ids: set[str]) -> list[dict]:
                 "published_at": _iso(version.published_at),
             }
         )
+
+    # 文档与版本行：`_rebuild` 的 `files[]` 与"版本行不完整即 503"的判据都来自这里。
+    version_rows = db.scalars(
+        select(DocumentVersion)
+        .where(DocumentVersion.job_id.in_(sorted(job_ids)))
+        .order_by(DocumentVersion.id)
+    ).all()
+    document_ids = {row.document_id for row in version_rows}
+    for document in db.scalars(
+        select(Document).where(Document.id.in_(sorted(document_ids))).order_by(Document.id)
+    ).all():
+        parents.append(
+            {
+                "kind": "document",
+                "id": document.id,
+                "tenant_id": document.tenant_id,
+                "owner_id": None,
+                "status": document.status,
+                "doc_type": document.doc_type,
+                "source": document.source,
+                "retention_status": document.retention_status,
+                "created_at": _iso(document.created_at),
+                "updated_at": _iso(document.updated_at),
+            }
+        )
+    for row in version_rows:
+        parents.append(
+            {
+                "kind": "document_version",
+                "id": row.id,
+                "document_id": row.document_id,
+                "tenant_id": row.tenant_id,
+                "job_id": row.job_id,
+                "revision": row.revision,
+                "original_filename": row.original_filename,
+                "storage_key": row.storage_key,
+                "checksum": row.checksum,
+                "media_type": row.media_type,
+                "size_bytes": row.size_bytes,
+                "page_count": row.page_count,
+                "text_chars": row.text_chars,
+                "ocr_applied": row.ocr_applied,
+                "parse_error": row.parse_error,
+                "created_at": _iso(row.created_at),
+            }
+        )
+
+    # 尝试行：`_rebuild` 的 `warnings` 与 `error` 取自"当次尝试"，缺了会静默变成空告警。
+    for attempt in db.scalars(
+        select(JobAttempt).where(JobAttempt.job_id.in_(sorted(job_ids))).order_by(JobAttempt.id)
+    ).all():
+        parents.append(
+            {
+                "kind": "job_attempt",
+                "id": attempt.id,
+                "job_id": attempt.job_id,
+                "tenant_id": attempt.tenant_id,
+                "attempt_no": attempt.attempt_no,
+                "status": attempt.status,
+                "started_at": _iso(attempt.started_at),
+                "finished_at": _iso(attempt.finished_at),
+                "engine": attempt.engine,
+                "parse_modes": attempt.parse_modes,
+                "error": attempt.error,
+                "warnings": attempt.warnings,
+            }
+        )
+
+    # 结果行：`_rebuild` 的 `result` 由 `export_rows()` 从这张表取。
+    for result in db.scalars(
+        select(ExtractionResult)
+        .where(ExtractionResult.job_id.in_(sorted(job_ids)))
+        .order_by(ExtractionResult.id)
+    ).all():
+        parents.append(
+            {
+                "kind": "extraction_result",
+                "id": result.id,
+                "tenant_id": result.tenant_id,
+                "job_id": result.job_id,
+                "document_version_id": result.document_version_id,
+                "template_version_id": result.template_version_id,
+                "filename": result.filename,
+                "doc_type": result.doc_type,
+                "state": result.state,
+                "revision_no": result.revision_no,
+                "fields": result.fields,
+                "values": result.values,
+                "warnings": result.warnings,
+                "confirmed_by": None,
+                "confirmed_at": _iso(result.confirmed_at),
+                "created_at": _iso(result.created_at),
+                "updated_at": _iso(result.updated_at),
+            }
+        )
     return parents
 
 
-def _template_version_ids(db, tenant_ids: set[str]) -> set[str]:
+def _template_version_ids(db, job_ids: set[str]) -> set[str]:
+    from app.contexts.review.domain import ExtractionResult
     from app.models.persistent_job import PersistentJob as Job
 
-    rows = db.execute(
-        select(Job.template_version_id).where(
-            Job.tenant_id.in_(sorted(tenant_ids)), Job.template_version_id.is_not(None)
-        )
-    ).all()
-    return {row[0] for row in rows if row[0]}
+    ids = {
+        row[0]
+        for row in db.execute(
+            select(Job.template_version_id).where(
+                Job.id.in_(sorted(job_ids)), Job.template_version_id.is_not(None)
+            )
+        ).all()
+        if row[0]
+    }
+    ids |= {
+        row[0]
+        for row in db.execute(
+            select(ExtractionResult.template_version_id).where(
+                ExtractionResult.job_id.in_(sorted(job_ids)),
+                ExtractionResult.template_version_id.is_not(None),
+            )
+        ).all()
+        if row[0]
+    }
+    return ids
+
+
+def _job_ids_of(rows_path: Path) -> set[str]:
+    """从行文件取任务 ID：父行导什么由行文件决定，不靠再查一遍库。"""
+    ids: set[str] = set()
+    with rows_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if line:
+                ids.add(json.loads(line)["id"])
+    return ids
 
 
 def _iso(value) -> str | None:
@@ -291,7 +426,7 @@ def _source_label() -> str:
     return f"{url.drivername}://{url.database or '(default)'}"
 
 
-def replay(out: Path, target_url: str) -> int:
+def replay(out: Path, target_url: str, *, rebuild_check: bool = False) -> int:
     """把一份导出写进一个**空库**再逐行读回，证明它可加载（维护轮 M11）。
 
     `--verify` 只证明"文件没被改过"，证明不了"这份导出能重建出可用的行"——
@@ -348,7 +483,14 @@ def replay(out: Path, target_url: str) -> int:
     try:
         with Session() as db:
             if parents:
-                _insert_parents(db, parents)
+                # 依赖顺序是三层，不是两层：任务行自己也是被引用者。
+                #
+                # `job_attempts.job_id`、`extraction_results.job_id` 与
+                # `document_versions.job_id` 都指向 `processing_jobs`，所以
+                # "先装全部依赖行、再装任务行"会把这两类卡在外键上（M13 第一次跑就是
+                # `Key (job_id)=… is not present in table "processing_jobs"`）。
+                # 正确顺序：先装任务行依赖的行 → 装任务行 → 再装依赖任务行的行。
+                _insert_pre_job_parents(db, parents)
             elif not disabled:
                 stubbed = _stub_parents(db, records)
             for row in records:
@@ -362,9 +504,15 @@ def replay(out: Path, target_url: str) -> int:
                         finished_at=None,
                         attempt_count=0,
                         snapshot=row["snapshot"],
+                        # R1 规范化列：不还原它们，`_rebuild` 会因为缺 fields/progress 报不完整。
+                        field_definitions=row.get("field_definitions"),
+                        progress=row.get("progress"),
                     )
                 )
                 loaded += 1
+            db.flush()
+            if parents:
+                _insert_post_job_parents(db, parents)
             db.commit()
 
         with Session() as db:
@@ -386,12 +534,72 @@ def replay(out: Path, target_url: str) -> int:
             print(f"  - {line}")
         return 1
     if parents:
-        how = f"自足导出：先装 {len(parents)} 条父行，外键保持开启"
+        how = f"自足导出：先装 {len(parents)} 条依赖行，外键保持开启"
     elif disabled:
-        how = "外键强制已关闭，未伪造任何父行"
+        how = "外键强制关闭，未伪造任何父行"
     else:
         how = f"回退路径：为 {stubbed} 个租户插入最小桩行"
     print(f"REPLAY RESULT: PASS（{loaded} 行写入 {target_name} 后逐行读回一致；{how}）")
+    if rebuild_check:
+        return _rebuild_check(target_url, records)
+    return 0
+
+
+def _rebuild_check(target_url: str, records: list[dict]) -> int:
+    """replay 之后真正调 `JobRepository._rebuild()` 重建 `Job`（维护轮 M13）。
+
+    前两层判据各自有边界：`--verify` 只看文件字节，`--replay` 只证明行插得进去且这一列读得回。
+    两者都成立时，任务详情仍可能重建不出来——`_rebuild` 需要版本行给 `files[]`、
+    尝试行给 `warnings`/`error`、结果行给 `result`。所以这条判据是**把重建函数本身跑一遍**，
+    并用 `Job.to_dict()` 的形状比对：重建出的对象必须能说出与非空快照一致的字段数、
+    文件数与结果行数。
+
+    比的是"形状"而不是"逐字节相等"：`_rebuild` 的产物来自规范化列，与快照不是同一份数据，
+    要求相等会把判据变成"规范化列与快照必须一字不差"——那是 R4 对账的事，不是这条。
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.orm import sessionmaker
+
+    from app.services.job_repository import IncompleteJobFacts, JobRepository
+
+    engine = create_engine(target_url)
+    Session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    repo = JobRepository()
+    failures: list[str] = []
+    checked = 0
+    with Session() as db:
+        for record in records:
+            snapshot = record["snapshot"] or {}
+            try:
+                job = repo._rebuild(db, db.get(PersistentJob, record["id"]))
+            except IncompleteJobFacts as exc:
+                failures.append(f"{record['id']}: 规范化源不完整（{exc}）")
+                continue
+            view = job.to_dict()
+            want_fields = len(snapshot.get("fields") or [])
+            want_files = len(snapshot.get("files") or [])
+            want_result = len(snapshot.get("result") or [])
+            if want_fields and len(view["fields"]) != want_fields:
+                failures.append(
+                    f"{record['id']}: 重建出 {len(view['fields'])} 个字段，快照有 {want_fields} 个"
+                )
+            if want_files and len(view["files"]) != want_files:
+                failures.append(
+                    f"{record['id']}: 重建出 {len(view['files'])} 个文件，快照有 {want_files} 个"
+                )
+            if want_result and len(view["result"] or []) != want_result:
+                failures.append(
+                    f"{record['id']}: 重建出 {len(view['result'] or [])} 行结果，快照有 {want_result} 行"
+                )
+            checked += 1
+    engine.dispose()
+    if failures:
+        print("REBUILD RESULT: FAIL")
+        for line in failures[:20]:
+            print(f"  - {line}")
+        return 1
+    print(f"REBUILD RESULT: PASS（{checked} 个任务经 JobRepository._rebuild 重建，形状与快照一致）")
     return 0
 
 
@@ -407,12 +615,42 @@ def _read_parents(out: Path, manifest: dict) -> list[dict]:
     ]
 
 
-def _insert_parents(db, parents: list[dict]) -> None:
-    """按父行文件重建 `tenants` 与 `template_versions`。顺序固定：父的父先装。"""
+def _insert_pre_job_parents(db, parents: list[dict]) -> None:
+    """装任务行之前必须就位的依赖行。顺序即依赖：被引用者先装。
+
+    只有 `tenants` → `documents` → `template_versions` 这一层在这里。
+    **`document_versions` 不在这层**：它的 `job_id` 虽然可空，但**有值**时照样受外键约束
+    （M13 第二次跑就是 `Key (job_id)=… is not present in table "processing_jobs"`），
+    所以它和 `job_attempts` 一样要等任务行装完。
+    """
+    _insert_kinds(db, parents, ("tenant", "document", "template_version"))
+
+
+def _insert_post_job_parents(db, parents: list[dict]) -> None:
+    """装任务行之后才能装的依赖行，仍然分两步。
+
+    **依赖是四层，不是三层。** 任务行装完只是第二层：`document_versions.job_id` 与
+    `job_attempts.job_id` 现在满足了，但 `extraction_results.document_version_id` 指向
+    `document_versions`——把结果行和版本行放在同一批里装，顺序取决于列表顺序，
+    而列表顺序来自导出时的查询顺序（M13 第三次跑就是
+    `Key (document_version_id)=… is not present in table "document_versions"`）。
+    所以再分一层：版本行与尝试行先装，结果行最后。
+    """
+    _insert_kinds(db, parents, ("document_version", "job_attempt"))
+    _insert_kinds(db, parents, ("extraction_result",))
+
+
+def _insert_kinds(db, parents: list[dict], kinds: tuple[str, ...]) -> None:
+    from app.contexts.processing.domain import JobAttempt
+    from app.contexts.review.domain import ExtractionResult
     from app.contexts.templates.domain import TemplateVersion
     from app.models.account import Tenant
+    from app.models.document import Document, DocumentVersion
 
-    for kind in ("tenant", "template_version"):
+    def _dt(value: str | None):
+        return datetime.fromisoformat(value) if value else None
+
+    for kind in kinds:
         for parent in [p for p in parents if p["kind"] == kind]:
             if kind == "tenant":
                 db.add(
@@ -420,10 +658,44 @@ def _insert_parents(db, parents: list[dict]) -> None:
                         id=parent["id"],
                         name=parent["name"],
                         status=parent["status"],
-                        created_at=datetime.fromisoformat(parent["created_at"]),
+                        created_at=_dt(parent["created_at"]),
                     )
                 )
-            else:
+            elif kind == "document":
+                db.add(
+                    Document(
+                        id=parent["id"],
+                        tenant_id=parent["tenant_id"],
+                        owner_id=None,
+                        status=parent["status"],
+                        doc_type=parent["doc_type"],
+                        source=parent["source"],
+                        retention_status=parent["retention_status"],
+                        created_at=_dt(parent["created_at"]),
+                        updated_at=_dt(parent["updated_at"]),
+                    )
+                )
+            elif kind == "document_version":
+                db.add(
+                    DocumentVersion(
+                        id=parent["id"],
+                        document_id=parent["document_id"],
+                        tenant_id=parent["tenant_id"],
+                        job_id=parent["job_id"],
+                        revision=parent["revision"],
+                        original_filename=parent["original_filename"],
+                        storage_key=parent["storage_key"],
+                        checksum=parent["checksum"],
+                        media_type=parent["media_type"],
+                        size_bytes=parent["size_bytes"],
+                        page_count=parent["page_count"],
+                        text_chars=parent["text_chars"],
+                        ocr_applied=parent["ocr_applied"],
+                        parse_error=parent["parse_error"],
+                        created_at=_dt(parent["created_at"]),
+                    )
+                )
+            elif kind == "template_version":
                 db.add(
                     TemplateVersion(
                         id=parent["id"],
@@ -431,11 +703,44 @@ def _insert_parents(db, parents: list[dict]) -> None:
                         tenant_id=parent["tenant_id"],
                         revision=parent["revision"],
                         fields=parent["fields"],
-                        published_at=(
-                            datetime.fromisoformat(parent["published_at"])
-                            if parent["published_at"]
-                            else None
-                        ),
+                        published_at=_dt(parent["published_at"]),
+                    )
+                )
+            elif kind == "job_attempt":
+                db.add(
+                    JobAttempt(
+                        id=parent["id"],
+                        job_id=parent["job_id"],
+                        tenant_id=parent["tenant_id"],
+                        attempt_no=parent["attempt_no"],
+                        status=parent["status"],
+                        started_at=_dt(parent["started_at"]),
+                        finished_at=_dt(parent["finished_at"]),
+                        engine=parent["engine"],
+                        parse_modes=parent["parse_modes"],
+                        error=parent["error"],
+                        warnings=parent["warnings"],
+                    )
+                )
+            else:
+                db.add(
+                    ExtractionResult(
+                        id=parent["id"],
+                        tenant_id=parent["tenant_id"],
+                        job_id=parent["job_id"],
+                        document_version_id=parent["document_version_id"],
+                        template_version_id=parent["template_version_id"],
+                        filename=parent["filename"],
+                        doc_type=parent["doc_type"],
+                        state=parent["state"],
+                        revision_no=parent["revision_no"],
+                        fields=parent["fields"],
+                        values=parent["values"],
+                        warnings=parent["warnings"],
+                        confirmed_by=None,
+                        confirmed_at=_dt(parent["confirmed_at"]),
+                        created_at=_dt(parent["created_at"]),
+                        updated_at=_dt(parent["updated_at"]),
                     )
                 )
     db.flush()
@@ -507,6 +812,11 @@ def main() -> int:
         default=None,
         help="--replay 的目标库连接串；库名必须是一次性库（<名称>_test 或 test_<名称>）",
     )
+    parser.add_argument(
+        "--rebuild-check",
+        action="store_true",
+        help="配合 --replay：写完之后调 JobRepository._rebuild 重建任务对象，验证详情可重建",
+    )
     args = parser.parse_args()
 
     if args.verify is not None:
@@ -515,7 +825,7 @@ def main() -> int:
         if not args.target_url:
             print("--replay 需要 --target-url（且库名必须是一次性库）", file=sys.stderr)
             return 1
-        return replay(args.replay, args.target_url)
+        return replay(args.replay, args.target_url, rebuild_check=args.rebuild_check)
     _reject_tracked_output(args.out)
     return export(args.out, tenant_id=args.tenant, include_parents=args.include_parents)
 
