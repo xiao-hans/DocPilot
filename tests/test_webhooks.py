@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -19,6 +20,14 @@ from app.services import outbox
 
 MASTER = "test-master-key-please-rotate"
 
+# 默认端点用 IP 字面量，不用域名。
+#
+# 出站策略会在投递前解析主机名，命中回环/内网即拒（DOC-DD-021 §5，这是设计而非缺陷）。
+# 但"解析结果"属于运行环境：实测本机 DNS 把 `example.com` 解析到 `127.0.0.1`，
+# 于是所有走真实投递的用例都变成 `error_kind=blocked_target`、`counters["sent"] == 0`，
+# 报出来的却是"签名/退避坏了"。用公网 IP 字面量，判定就不再看本机 DNS。
+PUBLIC_HOST = "93.184.216.34"
+
 
 @pytest.fixture(autouse=True)
 def master_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -29,11 +38,22 @@ def master_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "WEBHOOK_BACKOFF_SECONDS", 60, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def public_default_host() -> None:
+    """`PUBLIC_HOST` 必须真的被判为放行。
+
+    这条断言把"环境变了"和"策略坏了"分开：如果哪天出站策略把公网地址也拦下，
+    用例会在这里红，而不是在五条投递用例里各自红一次。
+    """
+    assert targets.blocked_address(PUBLIC_HOST) is None
+    assert not ipaddress.ip_address(PUBLIC_HOST).is_private
+
+
 def _base(workspace: dict) -> str:
     return f"/api/v1/tenants/{workspace['tenant_id']}"
 
 
-def _create_endpoint(workspace: dict, url: str = "https://example.com/hooks/docpilot", **payload):
+def _create_endpoint(workspace: dict, url: str = f"https://{PUBLIC_HOST}/hooks/docpilot", **payload):
     body = {"url": url, "event_types": ["job.succeeded"], "description": "账务系统"}
     body.update(payload)
     return workspace["client"].post(

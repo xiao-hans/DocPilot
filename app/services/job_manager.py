@@ -240,9 +240,16 @@ class JobManager:
                     self._staged.pop(job_id, None)
 
     def list_jobs(self) -> list[Job]:
-        """按创建时间倒序。保留最近 100 个。"""
+        """按创建时间倒序。保留最近 100 个。
+
+        排序键是 `(created_at, id)` 倒序，与持久化列表（`processing.list_jobs` 的
+        `created_at.desc(), id.desc()`）用同一套键。`created_at` 取自 `time.time()`，
+        本机分辨率约 1 毫秒（实测连续 5 次调用同值），紧凑循环里创建的任务会落在同一刻度上；
+        只按时间排序时，同刻度内的顺序取决于字典插入顺序，且 `reverse=True` 的稳定排序
+        让"最新在前"在同刻度内退化成"最早在前"——跨次调用结果不一致。
+        """
         with self._lock:
-            jobs = sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
+            jobs = sorted(self._jobs.values(), key=lambda j: (j.created_at, j.id), reverse=True)
             # 清理策略：只保留最近 100 个
             if len(jobs) > 100:
                 keep = {j.id for j in jobs[:100]}

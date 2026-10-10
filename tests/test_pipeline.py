@@ -583,8 +583,34 @@ def test_list_jobs_reverse_chronological(tmp_path: Path):
     assert returned_ids == list(reversed(ids))
 
 
+def test_list_jobs_order_is_stable_when_created_at_ties(tmp_path: Path):
+    """同一 `created_at` 刻度上的任务也必须给出确定顺序。
+
+    `Job.now()` 取自 `time.time()`，本机分辨率约 1 毫秒（实测连续 5 次调用同值），
+    紧凑循环创建的任务会落在同一刻度上。修复前这里会红：`sorted(..., reverse=True)`
+    是稳定排序，同刻度内退化成插入顺序，于是"最新在前"变成"最早在前"。
+    判据用固定刻度构造同值场景，不依赖本机时钟快慢。
+    """
+    pipeline = DocumentPipeline(dispatcher=None, extractor=None)
+    mgr = JobManager(pipeline=pipeline)
+
+    pdf = tmp_path / "tie.pdf"
+    make_text_pdf(pdf, text="tie")
+
+    fixed = 1_700_000_000.0
+    ids = []
+    for i in range(3):
+        job = mgr.create_job(files=[(f"tie_{i}.pdf", str(pdf))], fields=INVOICE_FIELDS)
+        job.created_at = fixed  # 三个任务同刻度
+        ids.append(job.id)
+
+    returned = [j.id for j in mgr.list_jobs()]
+    assert returned == sorted(ids, reverse=True)
+    # 连调两次结果一致：同刻度下不能出现"这次一个顺序、下次另一个顺序"。
+    assert [j.id for j in mgr.list_jobs()] == returned
+
+
 def test_create_job_initial_status_queued(tmp_path: Path):
-    """create_job 后初始 status=queued、progress=queued。"""
     pipeline = DocumentPipeline(dispatcher=None, extractor=None)
     mgr = JobManager(pipeline=pipeline)
 
