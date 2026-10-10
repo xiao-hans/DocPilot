@@ -16,7 +16,22 @@ from app.services.parsing.dispatcher import ParserDispatcher
 
 
 class DocumentPipeline:
-    """单任务流水线：对任务内每个文件依次 解析 → 提取，更新任务状态与结果。"""
+    """单任务流水线：对任务内每个文件依次 解析 → 提取，更新任务状态与结果。
+
+    ## 适配器的解析时机（维护轮 M17）
+
+    解析器与提取器**每次执行时**解析工厂，而不是构造时绑定一次。理由是一条实测到的差异
+    （`docs/06 §5.25` 记过）：`get_job_manager()` 是进程级单例，它的 `DocumentPipeline`
+    在首次调用时就把当时的 `get_dispatcher()` / `get_extractor(EXTRACTOR_MODE)` 结果存了下来，
+    于是"换掉工厂"这件事在生产形态下**对解析与提取不生效**——对象存储没有这个问题，
+    因为它本来就在每次调用时取。
+
+    这不是性能取舍：解析与提取都是秒级操作（PyMuPDF / RapidOCR / LLM 调用），
+    一次工厂调用（读一个模块级常量 + 构造对象）可以忽略。而"能不能换掉实现"
+    是 NFR-004 要的能力。
+
+    显式注入（构造参数）仍然优先：测试与需要固定实现的调用方照旧可以传。
+    """
 
     def __init__(
         self,
@@ -25,10 +40,19 @@ class DocumentPipeline:
         on_update: Callable[[Job], None] | None = None,
         on_result: Callable[[Job, FileInfo, object, object], None] | None = None,
     ) -> None:
-        self.dispatcher = dispatcher or get_dispatcher()
-        self.extractor = extractor or get_extractor(EXTRACTOR_MODE)
+        # 显式注入存下来；没注入的每次执行时再解析工厂（见类 docstring）。
+        self._injected_dispatcher = dispatcher
+        self._injected_extractor = extractor
         self.on_update = on_update
         self.on_result = on_result
+
+    @property
+    def dispatcher(self) -> ParserDispatcher:
+        return self._injected_dispatcher or get_dispatcher()
+
+    @property
+    def extractor(self) -> ExtractorBase:
+        return self._injected_extractor or get_extractor(EXTRACTOR_MODE)
 
     def _notify(self, job: Job) -> None:
         if self.on_update is not None:

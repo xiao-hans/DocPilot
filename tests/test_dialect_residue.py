@@ -104,7 +104,10 @@ class _DirtyExtractor(ExtractorBase):
 def test_machine_values_and_warnings_lose_nul_at_the_write_boundary(
     owner_workspace: dict, sandbox: Path, make_invoice_pdf, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(get_job_manager()._pipeline, "extractor", _DirtyExtractor())
+    # 经工厂替换（维护轮 M17 起流水线每次执行时解析工厂，所以这里对生产路径生效）；
+    # 显式注入仍优先，所以 `_pipeline.extractor` 在注入了实现时会盖过工厂。
+    monkeypatch.setattr("app.services.pipeline.get_extractor", lambda mode: _DirtyExtractor())
+    monkeypatch.setattr(get_job_manager()._pipeline, "_injected_extractor", None)
     job_id = _upload(owner_workspace, make_invoice_pdf())
 
     values = _result_values(owner_workspace, job_id)

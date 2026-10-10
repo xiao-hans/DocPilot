@@ -108,8 +108,10 @@ class _Recorder:
 def _install_sentinels(monkeypatch: pytest.MonkeyPatch, recorder: _Recorder) -> None:
     """在**类方法**层替换解析与提取，在**工厂**层替换对象存储。
 
-    类方法层的替换之所以必要，见模块 docstring：单例流水线在构造时就绑定了
-    dispatcher 与 extractor，换工厂函数对它们无效。
+    M17 之前这里必须在类方法层替换：单例流水线在构造时就绑定了 dispatcher 与
+    extractor，换工厂函数对它们无效。M17 把流水线改成每次执行时解析工厂之后，
+    工厂层替换也能生效——但类方法层的替换对**已注入**的实例仍然有效，
+    所以这里保留类方法层，让判据不受"注入与否"影响。
     """
 
     def fake_parse(self, path: Path, options: Any = None) -> ParseResult:
@@ -239,24 +241,37 @@ def test_upload_and_pipeline_agree_on_the_same_storage_instance(
     assert read == written, f"写入 {written} 与读取 {read} 不是同一批键"
 
 
-def test_dispatcher_and_extractor_are_bound_at_construction_time(monkeypatch, tmp_path):
-    """记录接缝差异：换工厂函数对解析器与提取器**不生效**。
+def test_dispatcher_and_extractor_resolve_the_factory_per_run(monkeypatch):
+    """解析器与提取器**每次执行时**解析工厂（维护轮 M17 闭合了 M2 记的差异）。
 
-    这条断言的是现状，不是期望。它把"单例流水线构造时绑定"这件事变成可执行的记录：
-    哪天有人在 `DocumentPipeline` 里改成每次调用都解析工厂，本用例会红，
-    而那时应当同步更新本文件与 `docs/07 NFR-004` 的说明。
+    M2 时这里断言的是"构造时绑定、换工厂无效"——那是当时的事实。M17 把流水线改成
+    每次执行时解析工厂，于是"换掉工厂"在生产形态下生效，`docs/06 §5.25` 记的那处差异闭合。
+    这条用例现在断言**新的**行为：替换工厂后，单例流水线取到的就是替换后的实现。
 
-    先显式取一次单例再替换工厂：否则本用例会依赖"别的用例先跑过"这个顺序假设，
-    而单例在首次调用时才创建，顺序一变结论就反了。
+    显式注入仍然优先：构造参数传了实现时，工厂不参与。
     """
-    manager = get_job_manager()
-    bound_before = manager._pipeline.dispatcher
-    marker_dispatcher = object()
-    monkeypatch.setattr(pipeline_module, "get_dispatcher", lambda: marker_dispatcher)
-    monkeypatch.setattr(pipeline_module, "get_extractor", lambda mode: object())
+    from app.services.extraction.base import ExtractResult, ExtractorBase
+    from app.services.parsing.dispatcher import ParserDispatcher
 
-    assert manager._pipeline.dispatcher is bound_before
-    assert manager._pipeline.dispatcher is not marker_dispatcher
+    class _Marker(ExtractorBase):
+        def extract(self, text, fields, metadata=None) -> ExtractResult:
+            return ExtractResult(values={}, warnings=[])
+
+    marker_dispatcher = ParserDispatcher()
+    marker_extractor = _Marker()
+    monkeypatch.setattr(pipeline_module, "get_dispatcher", lambda: marker_dispatcher)
+    monkeypatch.setattr(pipeline_module, "get_extractor", lambda mode: marker_extractor)
+    manager = get_job_manager()
+    # 单例的流水线没有显式注入，所以取到的是替换后的实现
+    monkeypatch.setattr(manager._pipeline, "_injected_dispatcher", None)
+    monkeypatch.setattr(manager._pipeline, "_injected_extractor", None)
+    assert manager._pipeline.dispatcher is marker_dispatcher
+    assert manager._pipeline.extractor is marker_extractor
+
+    # 显式注入优先：传了实现时工厂不参与
+    explicit = ParserDispatcher()
+    pipeline = pipeline_module.DocumentPipeline(dispatcher=explicit)
+    assert pipeline.dispatcher is explicit
 
 
 def test_unreplaced_factories_still_build_the_defaults():
@@ -288,6 +303,31 @@ def test_search_backend_factory_exists_now(monkeypatch):
     )
     assert issubclass(SqlSearchBackend, SearchBackend)
     assert isinstance(search_backend.get_search_backend(), SearchBackend)
+
+
+def test_extractor_factory_swap_reaches_the_production_path(
+    owner_workspace, sandbox, make_invoice_pdf, monkeypatch: pytest.MonkeyPatch
+):
+    """**只换工厂函数**，真实上传的结果必须来自替换后的提取器（维护轮 M17）。
+
+    这是 M2 缺的那条判据。M2 时它不可能成立——单例流水线构造时就把工厂结果存了下来，
+    所以那时的契约测试只能在类方法层替换，而"接口可替换"这句话最该被证明的地方
+    正是工厂层。M17 闭合后，这条用例才写得出。
+    """
+    from app.services.job_manager import get_job_manager
+
+    sentinel = "工厂替换生效标记"
+
+    class _FactoryOnly(ExtractorBase):
+        def extract(self, text, fields, metadata=None) -> ExtractResult:
+            return ExtractResult(values={field.name: sentinel for field in fields}, warnings=[])
+
+    monkeypatch.setattr(pipeline_module, "get_extractor", lambda mode: _FactoryOnly())
+    monkeypatch.setattr(get_job_manager()._pipeline, "_injected_extractor", None)
+
+    job_id = _upload(owner_workspace, make_invoice_pdf())
+    values = _result_values(owner_workspace, job_id)
+    assert set(values.values()) == {sentinel}, f"结果不是来自工厂替换的提取器：{values}"
 
 
 def test_object_storage_contract_is_satisfied_by_both_implementations(tmp_path: Path):
