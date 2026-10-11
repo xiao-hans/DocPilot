@@ -47,9 +47,17 @@ export const BACKEND_PORT = Number(process.env.E2E_BACKEND_PORT ?? (APP_CONTAINE
 export const BACKEND_ORIGIN = `http://127.0.0.1:${BACKEND_PORT}`
 export const FRONTEND_ORIGIN = 'http://127.0.0.1:5173'
 export const BOOTSTRAP_TOKEN = 'e2e-platform-bootstrap-token'
-/** 仅在 `E2E_WEBHOOK=1` 时注入；默认不配，让关闭姿态留在默认套件里。 */
+/** 仅在 `E2E_WEBHOOK=1`（主机形态）时注入；默认不配，让关闭姿态留在默认套件里。 */
 export const WEBHOOK_MASTER_KEY = 'e2e-webhook-master-key-please-rotate'
-export const WEBHOOK_ENABLED = process.env.E2E_WEBHOOK === '1'
+/**
+ * 后端是否配了主密钥——**必须反映后端的真实状态，不能只看开关**。
+ *
+ * 容器形态下主密钥由 `scripts/e2e_compose_env.py` 注入（`APP_WEBHOOK_MASTER_KEY`），
+ * 与 `E2E_WEBHOOK` 无关。M18 实测过一次真实的跨形态不一致：`E2E_COMPOSE=1
+ * E2E_APP_CONTAINERS=1` 时后端有主密钥，而用例按开关判定走了"关闭姿态"分支，
+ * 找不到那段说明而红。所以这里把两种来源合并成一个判断。
+ */
+export const WEBHOOK_ENABLED = process.env.E2E_WEBHOOK === '1' || APP_CONTAINER_MODE
 /** 一次性数据目录内的"平台已初始化"标记：随目录一起重建，因此不会跨运行残留。 */
 export const READY_MARKER = path.join(e2eDataDir, 'platform-ready.json')
 const SERVERS_FILE = path.join(tmpDir, 'servers.json')

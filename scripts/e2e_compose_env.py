@@ -566,7 +566,17 @@ def main() -> int:
         action="store_true",
         help="容器形态：迁移留给 compose 里的 migrate 容器，不在主机跑 alembic",
     )
-    parser.add_argument("--no-build", action="store_true", help="app-up 复用已有镜像，不重新构建")
+    parser.add_argument(
+        "--no-build",
+        action="store_true",
+        help=(
+            "app-up 复用已有镜像，不重新构建。"
+            "只在「刚构建过镜像、且代码未变」时用：维护轮 M18 实测过误用代价——"
+            "用 E2E_SKIP_BUILD=1 跑跨轮回归时，容器里是 5 天前的镜像，"
+            "而当时的改动是当天加的，于是「容器形态失败」其实是测了旧代码。"
+            "判断镜像是否新鲜：docker images docpilot-app:dev --format '{{.CreatedSince}}'"
+        ),
+    )
     parser.add_argument("--ready-timeout", type=int, default=180)
     args = parser.parse_args()
 
