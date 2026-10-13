@@ -8,7 +8,7 @@
 
 | 项 | 值 |
 |---|---|
-| 交付阶段 | 阶段 A–F 于 2026-10-02 交付；阶段 G0–G28 交付至 2026-10-07；维护轮 M1–M6 于 2026-10-10 交付（见 `docs/09 §39`–`§44`） |
+| 交付阶段 | 阶段 A–F 于 2026-10-02 交付；阶段 G0–G28 交付至 2026-10-07；维护轮 M1–M20 交付至 2026-10-13（见 `docs/09 §39`–`§59`） |
 | 后端用例 | 417 项（PostgreSQL 与 SQLite 基础套件各 417 项，0 失败 0 跳过） |
 | 浏览器用例 | 15 项（Playwright，系统 Chrome） |
 | 迁移 head | `e1f4c7a29d63`（审计请求关联 ID），单线性 12 步 |
@@ -43,19 +43,19 @@ app/
   worker.py          python -m app.worker
   webhooks.py        python -m app.webhooks
   api/               认证、租户、任务、成员四个路由模块与依赖
-  contexts/          8 个限界上下文：automation、documents、operations、
+  contexts/          9 个限界上下文：automation、documents、operations、
                      processing、quota、review、search、templates、webhooks
   models/            ORM 模型
   services/          解析、提取、对象存储、任务仓库、导出、审计等
-migrations/versions/ 11 个 Alembic 修订
-tests/               39 个文件，417 项用例
-scripts/             12 个门禁、演练与回填脚本
+migrations/versions/ 12 个 Alembic 修订
+tests/               37 个文件，417 项用例
+scripts/             19 个门禁、演练、回填与核对脚本
 frontend/            Vue 3 前端与 Playwright 用例
-docs/                21 篇设计文档、4 篇 ADR、1 份实施记录
+docs/                28 个 Markdown：编号文档 01–22、4 篇 ADR、1 份索引、1 份实施计划
 deploy/postgres/     首次初始化数据卷时创建测试库
 ```
 
-规模参考：`app/` 96 个 Python 文件、约 9,400 行；`tests/` 约 8,200 行；`docs/` 27 个 Markdown 文件。
+规模参考（按 `git ls-files` 统计，不含 `__pycache__`）：`app/` 98 个 Python 文件、11,389 行；`tests/` 37 个文件、11,067 行；`scripts/` 19 个（15 py + 4 sh）；`docs/` 28 个 Markdown（含 4 篇 ADR）。
 
 ## 快速开始（本机开发）
 
@@ -158,16 +158,21 @@ wsl -d Ubuntu-24.04 -- tail -f /dev/null
 cd frontend && E2E_COMPOSE=1 npx playwright test
 ```
 
-最近一次四条门禁读数（2026-10-10，串行）：
+最近一次四条门禁读数（2026-10-13，串行）：
 
 ```
 迁移门禁              退出码 0
-基础套件 PostgreSQL   417 项  0 失败 0 错误 0 跳过   180.6 秒
-基础套件 SQLite       417 项  0 失败 0 错误 0 跳过
+基础套件 PostgreSQL   417 项  0 失败 0 错误 0 跳过   244.9 秒
+基础套件 SQLite       417 项  0 失败 0 错误 0 跳过   243.2 秒
 -m s3                 8 项    0 失败 0 错误 0 跳过
--m broker             4 项    0 失败 0 错误 0 跳过
-浏览器端到端          15 项   0 失败，46.5 秒（Webhook 写路径需 E2E_WEBHOOK=1，见 frontend/tests/global-setup.ts）
+-m broker             4 项    0 失败 0 错误 0 跳过   6.2 秒（须显式给 BROKER_URL）
+浏览器端到端 默认形态  15 项   0 失败，46.5 秒
+浏览器端到端 容器形态  15 项   0 失败，2.5 分钟（E2E_COMPOSE=1 E2E_APP_CONTAINERS=1）
+Webhook 写路径形态     15 项   0 失败（E2E_WEBHOOK=1，见 docs/06 §5.33）
+文档交叉引用核对        scripts/doc_ref_check.py PASS（28 个文档，0 问题）
 ```
+
+**读数应同记 tests / failures / errors / skipped 四列。** `-m broker` 在 `BROKER_URL` 未设置时按设计**跳过**而不是失败；只记 `failures=0` 会把"没跑"读成"全通过"（维护轮 M20 实测差点这样记错，见 `docs/09 §59`）。
 
 浏览器端到端在默认形态（依赖栈 + 主机应用进程）下跑；`quota.spec.ts` 现在单跑也成立，不再依赖套件顺序。
 
@@ -179,7 +184,7 @@ cd frontend && E2E_COMPOSE=1 npx playwright test
 
 ### 模块化单体加独立 Worker
 
-`app/contexts/` 下的 8 个限界上下文按 DDD 战略设计划分，每个上下文分 `domain`、`repository`、`service`、`api` 四层。`app/services/` 是存量层，只在触及的阶段搬移（见 `docs/adr/0003`）。
+`app/contexts/` 下的 9 个限界上下文按 DDD 战略设计划分，每个上下文分 `domain`、`repository`、`service`、`api` 四层。`app/services/` 是存量层，只在触及的阶段搬移（见 `docs/adr/0003`）。
 
 三条硬规则：
 
