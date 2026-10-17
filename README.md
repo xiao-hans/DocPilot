@@ -10,7 +10,7 @@
 |---|---|
 | 交付阶段 | 阶段 A–F 于 2026-10-02 交付；阶段 G0–G28 交付至 2026-10-07；维护轮 M1–M20 交付至 2026-10-13（见 `docs/09 §39`–`§59`） |
 | 后端用例 | 417 项（PostgreSQL 与 SQLite 基础套件各 417 项，0 失败 0 跳过） |
-| 浏览器用例 | 15 项（Playwright，系统 Chrome） |
+| 浏览器用例 | 17 项（Playwright，系统 Chrome；含 2 项可访问性全量扫描） |
 | 迁移 head | `e1f4c7a29d63`（审计请求关联 ID），单线性 12 步 |
 | 默认基线 | `BROKER_URL` 空、`STORAGE_BACKEND=local`、`EXTRACTOR_MODE=mock`、Webhook 关闭 |
 
