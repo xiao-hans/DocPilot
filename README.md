@@ -156,21 +156,40 @@ wsl -d Ubuntu-24.04 -- tail -f /dev/null
 
 # 浏览器端到端（默认形态：依赖栈 + 主机应用进程）
 cd frontend && E2E_COMPOSE=1 npx playwright test
+
+# 文档交叉引用与用例编号核对
+.venv/Scripts/python.exe scripts/doc_ref_check.py
+
+# 改了产品函数时：抽出被改的函数，真跑覆盖它的用例
+.venv/Scripts/python.exe scripts/assertion_sync_check.py --rev WORKTREE --run
 ```
 
-最近一次四条门禁读数（2026-10-13，串行）：
+### 提交前（可选）
+
+装了这条 hook 之后，每次提交都会跑上面最后那条检查：抽改动里的产品函数，静态找出调用它们的用例，再真跑一遍。**只有覆盖用例真的失败才阻断提交**；纯提示不阻断。
+
+```bash
+# 安装（装成 .git/hooks/pre-commit；重复执行是幂等的）
+bash scripts/install_git_hooks.sh
+# 卸载
+rm .git/hooks/pre-commit
+```
+
+它拦得住"改了产品却忘了看测试"，**拦不住"看了但没改对"**——静态那一层只能看见测试文件被动过，看不见断言内容是否仍然成立（`docs/06` TC-FUNC-070 是这条边界的真实来历）。所以它是复核入口，不是"断言必然同步"的证明。
+
+最近一次门禁读数（2026-10-17，串行）：
 
 ```
 迁移门禁              退出码 0
-基础套件 PostgreSQL   417 项  0 失败 0 错误 0 跳过   244.9 秒
-基础套件 SQLite       417 项  0 失败 0 错误 0 跳过   243.2 秒
+基础套件 PostgreSQL   422 项  0 失败 0 错误 0 跳过
+基础套件 SQLite       422 项  0 失败 0 错误 0 跳过
 -m s3                 8 项    0 失败 0 错误 0 跳过
--m broker             4 项    0 失败 0 错误 0 跳过   6.2 秒（须显式给 BROKER_URL）
-浏览器端到端 默认形态  15 项   0 失败，46.5 秒
-浏览器端到端 容器形态  15 项   0 失败，2.5 分钟（E2E_COMPOSE=1 E2E_APP_CONTAINERS=1）
-Webhook 写路径形态     15 项   0 失败（E2E_WEBHOOK=1，见 docs/06 §5.33）
+-m broker             4 项    0 失败 0 错误 0 跳过（须显式给 BROKER_URL）
+浏览器端到端 默认形态  17 项   0 失败，56.9 秒（含 2 项可访问性全量扫描）
+浏览器端到端 容器形态  17 项   0 失败，1.6 分钟（E2E_COMPOSE=1 E2E_APP_CONTAINERS=1）
+Webhook 写路径形态     17 项   0 失败，1.4 分钟（E2E_WEBHOOK=1，见 docs/06 §5.33）
 文档交叉引用核对        scripts/doc_ref_check.py PASS（28 个文档，0 问题）
-断言同步提示            scripts/assertion_sync_check.py --rev WORKTREE --run（改了产品函数就真跑覆盖它的用例）
+断言同步提示            scripts/assertion_sync_check.py --rev WORKTREE --run
 ```
 
 **读数应同记 tests / failures / errors / skipped 四列。** `-m broker` 在 `BROKER_URL` 未设置时按设计**跳过**而不是失败；只记 `failures=0` 会把"没跑"读成"全通过"（维护轮 M20 实测差点这样记错，见 `docs/09 §59`）。
