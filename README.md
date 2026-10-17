@@ -170,6 +170,7 @@ cd frontend && E2E_COMPOSE=1 npx playwright test
 浏览器端到端 容器形态  15 项   0 失败，2.5 分钟（E2E_COMPOSE=1 E2E_APP_CONTAINERS=1）
 Webhook 写路径形态     15 项   0 失败（E2E_WEBHOOK=1，见 docs/06 §5.33）
 文档交叉引用核对        scripts/doc_ref_check.py PASS（28 个文档，0 问题）
+断言同步提示            scripts/assertion_sync_check.py --rev WORKTREE --run（改了产品函数就真跑覆盖它的用例）
 ```
 
 **读数应同记 tests / failures / errors / skipped 四列。** `-m broker` 在 `BROKER_URL` 未设置时按设计**跳过**而不是失败；只记 `failures=0` 会把"没跑"读成"全通过"（维护轮 M20 实测差点这样记错，见 `docs/09 §59`）。
