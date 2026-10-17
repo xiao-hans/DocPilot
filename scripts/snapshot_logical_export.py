@@ -426,7 +426,9 @@ def _source_label() -> str:
     return f"{url.drivername}://{url.database or '(default)'}"
 
 
-def replay(out: Path, target_url: str, *, rebuild_check: bool = False) -> int:
+def replay(
+    out: Path, target_url: str, *, rebuild_check: bool = False, rebuild_content: bool = False
+) -> int:
     """把一份导出写进一个**空库**再逐行读回，证明它可加载（维护轮 M11）。
 
     `--verify` 只证明"文件没被改过"，证明不了"这份导出能重建出可用的行"——
@@ -541,11 +543,79 @@ def replay(out: Path, target_url: str, *, rebuild_check: bool = False) -> int:
         how = f"回退路径：为 {stubbed} 个租户插入最小桩行"
     print(f"REPLAY RESULT: PASS（{loaded} 行写入 {target_name} 后逐行读回一致；{how}）")
     if rebuild_check:
-        return _rebuild_check(target_url, records)
+        return _rebuild_check(target_url, records, content=rebuild_content)
     return 0
 
 
-def _rebuild_check(target_url: str, records: list[dict]) -> int:
+def _compare_result_values(job, record: dict, db) -> list[str]:
+    """逐键比 `result` 的**取值**，按复核状态分档（维护轮 M24）。
+
+    为什么必须分档：`_rebuild` 的 `result` 来自 `export_rows()`，读的是
+    `extraction_results` 的**当前值**；人工复核会更新它，而快照里存的是**机器提取时**的值。
+    所以对已复核的任务，重建值与快照值**本来就应当不同**——要求相等会把正确行为判成失败。
+    这类"把正确实现判红"的断言比漏报更糟：它促使人去改本来对的东西。
+
+    分档口径取自 `extraction_results` 自己的列（**实测列名，不是 domain 里的常量名**）：
+    `state` 取值 `machine`／`revised`／`confirmed`／`rejected`，配合 `revision_no`。
+
+    - `state != 'machine'` 或 `revision_no > 1`：视为已人工修改。
+      只要求"每行的键集合一致且值非空"，不比取值。
+    - 其余：逐键相等。
+
+    返回失败描述列表；空列表表示通过。
+    """
+    from sqlalchemy import select
+
+    from app.contexts.review.domain import ExtractionResult
+
+    rows = list(
+        db.scalars(
+            select(ExtractionResult).where(ExtractionResult.job_id == job.id)
+        ).all()
+    )
+    human_touched = any(
+        (getattr(row, "state", "machine") != "machine")
+        or ((getattr(row, "revision_no", 1) or 1) > 1)
+        for row in rows
+    )
+
+    snapshot_result = record["snapshot"].get("result") or []
+    view_result = job.result or []
+    problems: list[str] = []
+
+    if len(view_result) != len(snapshot_result):
+        # 条数不等已由"形状"那一层报过，这里不重复报，避免同一件事两条失败
+        return problems
+
+    for index, (want, got) in enumerate(zip(snapshot_result, view_result)):
+        want_values = (want or {}).get("values") or {}
+        got_values = (got or {}).get("values") or {}
+        if human_touched:
+            # 已复核：只比键集合与非空性，不比取值
+            if set(want_values) != set(got_values):
+                problems.append(
+                    f"{job.id}: result[{index}] 键集合不一致"
+                    f"（快照 {sorted(want_values)} / 重建 {sorted(got_values)}）"
+                )
+            elif any(value in (None, "") for value in got_values.values()):
+                problems.append(
+                    f"{job.id}: result[{index}] 重建出空值，{'复核过的任务不应丢值'}"
+                )
+        elif want_values != got_values:
+            diff_keys = sorted(
+                key
+                for key in set(want_values) | set(got_values)
+                if want_values.get(key) != got_values.get(key)
+            )
+            problems.append(
+                f"{job.id}: result[{index}] 取值不一致，键 {diff_keys}"
+                f"（快照 {[want_values.get(k) for k in diff_keys]} / "
+                f"重建 {[got_values.get(k) for k in diff_keys]}）"
+            )
+    return problems
+
+
+def _rebuild_check(target_url: str, records: list[dict], *, content: bool = False) -> int:
     """replay 之后真正调 `JobRepository._rebuild()` 重建 `Job`（维护轮 M13）。
 
     前两层判据各自有边界：`--verify` 只看文件字节，`--replay` 只证明行插得进去且这一列读得回。
@@ -556,6 +626,9 @@ def _rebuild_check(target_url: str, records: list[dict]) -> int:
 
     比的是"形状"而不是"逐字节相等"：`_rebuild` 的产物来自规范化列，与快照不是同一份数据，
     要求相等会把判据变成"规范化列与快照必须一字不差"——那是 R4 对账的事，不是这条。
+
+    `content=True` 时追加**取值**比对（维护轮 M24），边界见 `_compare_result_values`：
+    它按复核状态分档，已复核任务不比取值。默认关闭，保持既有读数可比。
     """
     from sqlalchemy import create_engine
     from sqlalchemy.engine import make_url
@@ -592,6 +665,8 @@ def _rebuild_check(target_url: str, records: list[dict]) -> int:
                 failures.append(
                     f"{record['id']}: 重建出 {len(view['result'] or [])} 行结果，快照有 {want_result} 行"
                 )
+            if content:
+                failures.extend(_compare_result_values(job, record, db))
             checked += 1
     engine.dispose()
     if failures:
@@ -599,7 +674,12 @@ def _rebuild_check(target_url: str, records: list[dict]) -> int:
         for line in failures[:20]:
             print(f"  - {line}")
         return 1
-    print(f"REBUILD RESULT: PASS（{checked} 个任务经 JobRepository._rebuild 重建，形状与快照一致）")
+    scope = "形状与取值均与快照一致" if content else "形状与快照一致"
+    if content:
+        # 分档会让"已复核任务的取值不同"也通过，所以文案不能说"取值都一致"。
+        # 把口径印出来，避免 PASS 被读成"逐字节相等"。
+        scope = "形状一致；取值按复核状态分档（未复核逐键相等，已复核只验键集与非空）"
+    print(f"REBUILD RESULT: PASS（{checked} 个任务经 JobRepository._rebuild 重建，{scope}）")
     return 0
 
 
@@ -817,6 +897,15 @@ def main() -> int:
         action="store_true",
         help="配合 --replay：写完之后调 JobRepository._rebuild 重建任务对象，验证详情可重建",
     )
+    parser.add_argument(
+        "--rebuild-content",
+        action="store_true",
+        help=(
+            "配合 --rebuild-check：除条数外再比 result 的**取值**。"
+            "已人工复核的任务只比键集合与非空性，不比取值——重建值来自 extraction_results "
+            "的当前值，与快照里的机器值本来就应当不同"
+        ),
+    )
     args = parser.parse_args()
 
     if args.verify is not None:
@@ -825,7 +914,12 @@ def main() -> int:
         if not args.target_url:
             print("--replay 需要 --target-url（且库名必须是一次性库）", file=sys.stderr)
             return 1
-        return replay(args.replay, args.target_url, rebuild_check=args.rebuild_check)
+        return replay(
+            args.replay,
+            args.target_url,
+            rebuild_check=args.rebuild_check,
+            rebuild_content=args.rebuild_content,
+        )
     _reject_tracked_output(args.out)
     return export(args.out, tenant_id=args.tenant, include_parents=args.include_parents)
 
