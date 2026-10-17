@@ -566,20 +566,41 @@ def test_get_job_returns_same_instance(tmp_path: Path):
 
 
 def test_list_jobs_reverse_chronological(tmp_path: Path):
-    """list_jobs() 按创建时间倒序返回。"""
+    """`list_jobs()` 按创建时间倒序返回。
+
+    **判据只能断言契约承诺的那件事。** 产品承诺的是"创建时间（`created_at`）倒序"，
+    同刻度内按 `id` 倒序以保证确定性——`id` 是随机 uuid，与创建顺序无关，
+    所以"按创建顺序倒序"不是系统承诺的，断言它必然间歇性红。
+
+    这条用例原来写的是 `returned_ids == list(reversed(ids))`（按创建顺序倒序）。
+    M1 把排序键从 `created_at` 改成 `(created_at, id)` 之后，同刻度内的顺序变成
+    按 uuid 倒序，旧断言就只剩约 1/6 的偶然通过率；后来 8 次连跑全红。
+    同刻度场景的确定性由 `test_list_jobs_order_is_stable_when_created_at_ties` 专门覆盖。
+
+    这里构造**刻度严格递增**的输入，让"倒序"有确定答案；再用非递增断言兜住同刻度情形。
+    """
     pipeline = DocumentPipeline(dispatcher=None, extractor=None)
     mgr = JobManager(pipeline=pipeline)
 
     ids = []
+    stamps = []
     for i in range(3):
         pdf = tmp_path / f"order_{i}.pdf"
         make_text_pdf(pdf, text=f"doc {i}")
         job = mgr.create_job(files=[(f"order_{i}.pdf", str(pdf))], fields=INVOICE_FIELDS)
+        # 显式错开刻度：被测的是"倒序"，不是本机时钟分辨率
+        job.created_at = 1_700_000_000.0 + i
         ids.append(job.id)
+        stamps.append(job.created_at)
 
     jobs = mgr.list_jobs()
     returned_ids = [j.id for j in jobs]
-    # 倒序：最新的在前
+    returned_stamps = [j.created_at for j in jobs]
+
+    # 契约本体：创建时间非递增
+    assert returned_stamps == sorted(returned_stamps, reverse=True)
+    # 刻度互不相同时，顺序完全确定，可以断言到具体 id
+    assert returned_stamps == list(reversed(stamps))
     assert returned_ids == list(reversed(ids))
 
 
