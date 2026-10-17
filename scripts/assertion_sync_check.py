@@ -222,7 +222,11 @@ def main() -> int:
         for ln in tail:
             print(f"  {ln.strip()[:110]}")
         run_failed = result.returncode != 0
-        print(f"ASSERTION SYNC: --run 结果 {'FAIL' if run_failed else 'PASS'}（rc={result.returncode}）")
+        # 区分"用例失败"（rc=1）与"pytest 自己没跑起来"（rc=2/3/4）。两者处置不同：
+        # 前者要去看断言，后者要看环境（例如 venv 不可达）。实测副本环境里出现过
+        # rc=4 + `WinError 1920`，那是环境问题，不是断言问题。
+        kind = "用例失败" if result.returncode == 1 else f"pytest 未能正常执行（rc={result.returncode}）"
+        print(f"ASSERTION SYNC: --run 结果 {'FAIL' if run_failed else 'PASS'}（{kind}）")
 
     if run_failed:
         return 1
