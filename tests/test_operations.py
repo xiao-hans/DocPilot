@@ -1,4 +1,4 @@
-"""运营视图与就绪探针（TC-FUNC-038..040、TC-SEC-019/020、TC-REC-007）。"""
+"""运营视图与就绪探针（TC-FUNC-038..040、TC-SEC-019/020、TC-REC-007、TC-SEC-028）。"""
 
 from __future__ import annotations
 
@@ -450,3 +450,76 @@ def test_platform_failure_view_audits_each_listed_tenant(
         other_workspace["tenant_id"],
     }
     assert all(row.metadata_["scope"] == "platform" for row in rows)
+
+
+# ---------- 恶意文件检测分布（FR-010 / DOC-DD-024，维护轮 M31）----------
+
+
+def _set_malware_status(tenant_id: str, *, status: str | None) -> None:
+    """把该租户全部文档版本标成指定状态，或标回 NULL（没扫过）。"""
+    from sqlalchemy import update
+
+    from app.models.document import DocumentVersion
+
+    with SessionLocal() as db:
+        db.execute(
+            update(DocumentVersion)
+            .where(DocumentVersion.tenant_id == tenant_id)
+            .values(malware_status=status)
+        )
+        db.commit()
+
+
+def test_tenant_usage_reports_unscanned_separately_from_clean(
+    owner_workspace: dict, make_invoice_pdf
+) -> None:
+    """TC-SEC-028：没扫过不能被读成"扫过且干净"。
+
+    恶意文件检测默认关闭（DOC-DD-024 §3.2），所以生产库里默认形态是"全部没扫过"。
+    若把 NULL 折进 `clean`，运维看到的就是"100% 干净"——正是这条口径要防的误读。
+    """
+    _upload(owner_workspace, make_invoice_pdf(SERIAL))
+    base = f"/api/v1/tenants/{owner_workspace['tenant_id']}"
+
+    usage = owner_workspace["client"].get(f"{base}/usage?days=7").json()
+    assert usage["malware"]["total"] == 1
+    assert usage["malware"]["by_status"] == {"clean": 0, "infected": 0, "error": 0, "unscanned": 1}
+
+    # 扫过且干净：四个键都在，缺的补 0，界面不必自己判断"缺键是什么意思"
+    _set_malware_status(owner_workspace["tenant_id"], status="clean")
+    usage = owner_workspace["client"].get(f"{base}/usage?days=7").json()
+    assert usage["malware"]["by_status"]["clean"] == 1
+    assert usage["malware"]["by_status"]["unscanned"] == 0
+
+    # 引擎不可达：结论记 error，不算"干净"也不算"感染"
+    _set_malware_status(owner_workspace["tenant_id"], status="error")
+    usage = owner_workspace["client"].get(f"{base}/usage?days=7").json()
+    assert usage["malware"]["by_status"] == {"clean": 0, "infected": 0, "error": 1, "unscanned": 0}
+
+
+def test_platform_malware_total_counts_only_actionable_statuses(
+    owner_workspace: dict, other_workspace: dict, make_invoice_pdf, platform_admin_without_membership
+) -> None:
+    """跨租户只聚合要动手的状态：感染与引擎故障。
+
+    `unscanned` 不进告警——能力默认关闭时它就该是全部，把默认形态算进告警会让运维
+    每次刷新都收到一条本该怎么有的通知，最后谁都不过这一列。
+    """
+    _upload(owner_workspace, make_invoice_pdf(SERIAL))
+    _upload(other_workspace, make_invoice_pdf("01100200011100045240"))
+    _set_malware_status(owner_workspace["tenant_id"], status="infected")
+    _set_malware_status(other_workspace["tenant_id"], status="clean")
+
+    ops = platform_admin_without_membership()
+    response = ops["client"].get("/api/v1/platform/usage?days=30")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    by_tenant = {row["tenant_id"]: row for row in body["tenants"]}
+
+    assert by_tenant[owner_workspace["tenant_id"]]["malware"]["infected"] == 1
+    assert by_tenant[owner_workspace["tenant_id"]]["malware"]["unscanned"] == 0
+    assert by_tenant[other_workspace["tenant_id"]]["malware"]["clean"] == 1
+    assert body["totals"]["malware_flagged"] == 1
+
+    dumped = json.dumps(body, ensure_ascii=False)
+    assert SERIAL not in dumped

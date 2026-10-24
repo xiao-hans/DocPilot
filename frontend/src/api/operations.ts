@@ -24,6 +24,16 @@ export interface TenantUsageDto {
   results: { total: number; by_state: Record<string, number>; human_revisions: number }
   automation: { rules_active: number; runs: Record<string, number>; pending_events: number }
   search_entries: number
+  /**
+   * 恶意文件检测分布（FR-010 / DOC-DD-024）。
+   *
+   * `unscanned` 是后端把 NULL 读出来的那一格，不是库里存的值。契约要求四种状态
+   * 都出现在响应里、缺的补 0，所以这里四个键都声明为必填——少一个就是后端违约。
+   */
+  malware: {
+    total: number
+    by_status: { clean: number; infected: number; error: number; unscanned: number }
+  }
 }
 
 export interface PlatformTenantRowDto {
@@ -34,6 +44,10 @@ export interface PlatformTenantRowDto {
   jobs_failed_in_window: number
   pending_events: number
   rule_runs_failed: number
+  /** 恶意文件检测分布，口径同 `TenantUsageDto.malware`。 */
+  malware: {
+    by_status: { clean: number; infected: number; error: number; unscanned: number }
+  }
 }
 
 export interface PlatformUsageDto {
@@ -41,7 +55,13 @@ export interface PlatformUsageDto {
   total_tenants: number
   limit: number
   offset: number
-  totals: { documents: number; storage_bytes: number; pending_events: number }
+  totals: {
+    documents: number
+    storage_bytes: number
+    pending_events: number
+    /** 需要动手的状态合计：感染 + 引擎故障；未扫描不算告警（能力默认关闭时它就该是全部）。 */
+    malware_flagged: number
+  }
   tenants: PlatformTenantRowDto[]
 }
 

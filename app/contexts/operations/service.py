@@ -31,6 +31,9 @@ DEFAULT_WINDOW_DAYS = 30
 PAGE_MAX = 100
 JOB_STATUSES = ("queued", "processing", "succeeded", "partial", "failed")
 RESULT_STATES = ("machine", "revised", "confirmed", "rejected")
+# 恶意文件检测的四种事实（DOC-DD-024 §4）。`unscanned` 不是库里的值，是 NULL 的读法：
+# 没扫过不能被读成"扫过且干净"，所以它应自己占一格，而不是并进 clean 或干脆不显示。
+MALWARE_STATUSES = ("clean", "infected", "error", "unscanned")
 
 
 def _now() -> datetime:
@@ -69,6 +72,18 @@ def _by_tenant(db: Session, value, key, where: list) -> dict[str, dict[Any, int]
     return grouped
 
 
+def _four_state(counts: dict[Any, int], *, unscanned: int) -> dict[str, int]:
+    """把一组计数补齐成四种恶意文件检测状态。
+
+    `unscanned` 由调用方单独查（`col.is_(None)`），因为分组查询里的 NULL 键在不同方言下的
+    表示不一致，而这个数字恰好是"能力有没有开"的直接证据，不能靠方言习惯。
+    """
+    return {
+        status: (unscanned if status == "unscanned" else counts.get(status, 0))
+        for status in MALWARE_STATUSES
+    }
+
+
 def tenant_usage(db: Session, *, tenant_id: str, days: int = DEFAULT_WINDOW_DAYS) -> dict[str, Any]:
     window = _clean_window(days)
     since = _now() - timedelta(days=window)
@@ -85,6 +100,20 @@ def tenant_usage(db: Session, *, tenant_id: str, days: int = DEFAULT_WINDOW_DAYS
     )
     jobs = _grouped(db, PersistentJob.status, [PersistentJob.tenant_id == tenant_id])
     results = _grouped(db, ExtractionResult.state, [ExtractionResult.tenant_id == tenant_id])
+    scanned = _grouped(
+        db, DocumentVersion.malware_status, [DocumentVersion.tenant_id == tenant_id]
+    )
+    # NULL 键单独取一次：SQLAlchemy 的 `select(func.count()).where(col.is_(None))` 在两种
+    # 方言下都返回"没扫过的版本数"，不依赖 `_grouped` 对 NULL 的表示。
+    unscanned_count = int(
+        db.scalar(
+            select(func.count(DocumentVersion.id)).where(
+                DocumentVersion.tenant_id == tenant_id,
+                DocumentVersion.malware_status.is_(None),
+            )
+        )
+        or 0
+    )
     pending_events = int(
         db.scalar(
             select(func.count(DomainEventRecord.id)).where(
@@ -157,6 +186,12 @@ def tenant_usage(db: Session, *, tenant_id: str, days: int = DEFAULT_WINDOW_DAYS
         "search_entries": int(
             db.scalar(select(func.count(SearchEntry.id)).where(SearchEntry.tenant_id == tenant_id)) or 0
         ),
+        # 恶意文件检测分布（FR-010，DOC-DD-024）。四种状态在响应里都出现，缺的那个补 0，
+        # 界面不必自己判断"缺键是什么意思"；`unscanned` 是 NULL 的读法，单独查。
+        "malware": {
+            "total": versions,
+            "by_status": _four_state(scanned, unscanned=unscanned_count),
+        },
     }
 
 
@@ -222,6 +257,20 @@ def platform_usage(
             .group_by(RuleRun.tenant_id)
         ).all()
     )
+    malware = _by_tenant(
+        db, DocumentVersion.malware_status, DocumentVersion.tenant_id,
+        [DocumentVersion.tenant_id.in_(tenant_ids)],
+    )
+    malware_unscanned = dict(
+        db.execute(
+            select(DocumentVersion.tenant_id, func.count(DocumentVersion.id))
+            .where(
+                DocumentVersion.tenant_id.in_(tenant_ids),
+                DocumentVersion.malware_status.is_(None),
+            )
+            .group_by(DocumentVersion.tenant_id)
+        ).all()
+    )
 
     rows = [
         {
@@ -232,6 +281,10 @@ def platform_usage(
             "jobs_failed_in_window": int(recent_failed.get(tenant.id, 0)),
             "pending_events": int(pending.get(tenant.id, 0)),
             "rule_runs_failed": int(failed_runs.get(tenant.id, 0)),
+            "malware": _four_state(
+                malware.get(tenant.id, {}),
+                unscanned=int(malware_unscanned.get(tenant.id, 0)),
+            ),
         }
         for tenant in tenants
     ]
@@ -245,6 +298,11 @@ def platform_usage(
             "documents": sum(row["documents"] for row in rows),
             "storage_bytes": sum(row["storage_bytes"] for row in rows),
             "pending_events": sum(row["pending_events"] for row in rows),
+            # 只聚合两个"需要动手"的状态。`unscanned` 不算告警——能力默认关闭时它就该是全部；
+            # 把默认形态算进告警会让运维每次都收到一条本该怎么有的通知。
+            "malware_flagged": sum(
+                row["malware"]["infected"] + row["malware"]["error"] for row in rows
+            ),
         },
         # 两个读数并列，因为它们的失效方式不同：
         #   job_rebuild_incomplete_total 来自审计表，跨重启、跨进程可核对——§6.1 的门禁看这条；

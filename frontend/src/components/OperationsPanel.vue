@@ -51,6 +51,15 @@ const resultStateLabels: Record<string, string> = {
   rejected: '已驳回',
 }
 
+// 恶意文件检测的四种事实（DOC-DD-024）。`unscanned` 应单独一格：它不等于"干净"，
+// 混同会让"能力没开"显示成"全部通过"。界面因此不把 0 值折叠掉，缺的状态由后端补 0。
+const malwareStatusLabels: Record<string, string> = {
+  clean: '已扫描且干净',
+  infected: '发现威胁',
+  error: '引擎不可用',
+  unscanned: '未扫描',
+}
+
 const tenantTotalJobs = computed(() => platform.value?.tenants.length ?? 0)
 
 function statusSummary(byStatus: Record<string, number>, labels: Record<string, string>): string {
@@ -148,7 +157,8 @@ onMounted(load)
       <p data-testid="platform-totals" class="text-xs text-secondary">
         {{ platform.total_tenants }} 个租户 · 文档 {{ platform.totals.documents }} ·
         存储 {{ formatBytes(platform.totals.storage_bytes) }} · 待投递事件
-        {{ platform.totals.pending_events }}
+        {{ platform.totals.pending_events }} · 威胁待处置
+        {{ platform.totals.malware_flagged }}
       </p>
       <div class="overflow-x-auto">
         <table class="w-full border-collapse text-left text-xs">
@@ -252,6 +262,13 @@ onMounted(load)
           statusSummary(usage.results.by_state, resultStateLabels) || '无'
         }} · 人工修订 {{ usage.results.human_revisions }} 次 · 活跃规则
         {{ usage.automation.rules_active }} 条 · 待投递事件 {{ usage.automation.pending_events }}
+      </p>
+      <p data-testid="tenant-malware-summary" class="text-xs text-secondary">
+        恶意文件检测：{{ statusSummary(usage.malware.by_status, malwareStatusLabels) || '无版本' }}（版本 {{ usage.malware.total }}）
+      </p>
+      <p class="text-xs text-muted">
+        恶意文件检测默认关闭；此时全部版本都落在"未扫描"里。那是能力没开的证据，
+        不是扫描通过的结论。开启方式见 DOC-DD-024。
       </p>
     </div>
 
