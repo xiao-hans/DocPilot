@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.contexts.operations import api as operations_api
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.main import app
 from app.models.access import AuditEvent
 from app.models.schema import INVOICE_TEMPLATE
@@ -72,7 +72,7 @@ def test_readyz_storage_segment_follows_backend(owner_workspace: dict, monkeypat
     local 后端没有外部依赖可问，声明 s3 就必须真能列出对象——否则上传/下载都会失败，
     不能只因为数据库健康就把服务标成 ready。
     """
-    from app import config
+    from app.platform import config
     from app.contexts.operations import service as operations_service
 
     # 判据必须只由存储段决定：迁移不同步本身就会 503，所以这里传库里的真实 head。
@@ -110,7 +110,7 @@ def test_readyz_storage_segment_follows_backend(owner_workspace: dict, monkeypat
 
 def test_storage_health_reads_config_shape(owner_workspace: dict, monkeypatch) -> None:
     """`storage_health()` 本身的正反向：local 不去问，s3 问不到就报类名。"""
-    from app import config
+    from app.platform import config
     from app.contexts.operations import service as operations_service
 
     monkeypatch.setattr(config, "STORAGE_BACKEND", "local", raising=False)
@@ -125,7 +125,7 @@ def test_storage_health_reads_config_shape(owner_workspace: dict, monkeypatch) -
         def list_keys(self, prefix: str = ""):
             yield "some/key.pdf"
 
-    import app.services.object_storage as object_storage
+    import app.adapters.storage.object_storage as object_storage
 
     monkeypatch.setattr(object_storage, "get_object_storage", lambda: Listing())
     health = operations_service.storage_health()
@@ -255,7 +255,8 @@ def test_platform_usage_audits_every_listed_tenant(
 
 
 def _queue_mode(monkeypatch, consumers, backlog):
-    from app.contexts.processing import broker, dispatch
+    from app.adapters.broker import amqp as broker
+    from app.contexts.processing import dispatch
 
     monkeypatch.setattr("app.contexts.processing.service.QUEUE_ENABLED", True)
     monkeypatch.setattr(broker, "consumer_count", lambda queue=None: consumers)

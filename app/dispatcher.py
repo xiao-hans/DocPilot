@@ -12,12 +12,12 @@ from __future__ import annotations
 import logging
 import threading
 
-from app.config import DISPATCH_POLL_SECONDS, QUEUE_ENABLED
+from app.platform.config import DISPATCH_POLL_SECONDS, QUEUE_ENABLED
 from app.contexts.processing import service as processing
-from app.contexts.processing.broker import AmqpTransport
+from app.adapters.broker.amqp import AmqpTransport
 from app.contexts.processing.dispatcher import Dispatcher
-from app.db import SessionLocal
-from app.request_context import configure_logging
+from app.platform.db import SessionLocal
+from app.platform.request_context import configure_logging
 
 logger = logging.getLogger("docpilot.dispatcher.main")
 

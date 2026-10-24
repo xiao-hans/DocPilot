@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.main import app
 from app.models.persistent_job import PersistentJob
 from app.models.schema import INVOICE_TEMPLATE

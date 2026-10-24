@@ -10,8 +10,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import auth, members, tenants, workspace_jobs
-from app.config import APP_ENV, BASE_DIR, DATABASE_URL, QUEUE_ENABLED, UPLOAD_DIR
+from app.contexts.identity.api import auth, members, tenants
+from app.contexts.processing import api as workspace_jobs
+from app.platform.config import APP_ENV, BASE_DIR, DATABASE_URL, QUEUE_ENABLED, UPLOAD_DIR
 from app.contexts.automation import api as automation_api
 from app.contexts.documents import api as documents_api
 from app.contexts.operations import api as operations_api
@@ -21,10 +22,10 @@ from app.contexts.review import api as review_api
 from app.contexts.search import api as search_api
 from app.contexts.templates import api as templates_api
 from app.contexts.webhooks import api as webhooks_api
-from app.db import SessionLocal, initialize_development_schema
-from app.errors import AccessError
-from app.request_context import RequestIdMiddleware, configure_logging
-from app.services.job_manager import get_job_manager
+from app.platform.db import SessionLocal, initialize_development_schema
+from app.platform.errors import AccessError
+from app.platform.request_context import RequestIdMiddleware, configure_logging
+from app.contexts.processing.manager import get_job_manager
 
 
 @asynccontextmanager

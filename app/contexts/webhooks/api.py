@@ -12,11 +12,11 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import TenantContext, require_csrf, require_roles
-from app import config
+from app.platform.http.dependencies import TenantContext, require_csrf, require_roles
+from app.platform import config
 from app.contexts.automation.domain import ALLOWED_EVENT_TYPES
 from app.contexts.webhooks import service
-from app.db import get_db
+from app.platform.db import get_db
 
 router = APIRouter(prefix="/api/v1/tenants/{tenant_id}", tags=["webhooks"])
 READ_ROLES = ("owner", "admin", "member")

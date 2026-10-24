@@ -13,11 +13,11 @@ from sqlalchemy.orm import Session
 from app.contexts.review import repository
 from app.contexts.review.domain import RESULT_STATES, ExtractionResult, ResultRevision
 from app.contexts.search import service as search
-from app.errors import AccessError
+from app.platform.errors import AccessError
 from app.models.document import DocumentVersion
-from app.services import audit, outbox
-from app.services.text_safety import clean_payload, without_nul
-from app.services.timestamps import iso_utc
+from app.shared import audit, outbox
+from app.shared.text_safety import clean_payload, without_nul
+from app.shared.timestamps import iso_utc
 
 REVIEW_ROLES = ("reviewer", "admin", "owner")
 

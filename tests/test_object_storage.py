@@ -13,10 +13,10 @@ from pathlib import Path
 import pytest
 from botocore.exceptions import ClientError
 
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.models.document import DocumentVersion
 from app.models.schema import INVOICE_TEMPLATE
-from app.services.object_storage import (
+from app.adapters.storage.object_storage import (
     LocalStorage,
     ObjectInfo,
     ObjectStorage,
@@ -46,7 +46,7 @@ def upload_root(tmp_path, monkeypatch) -> Path:
     孤儿审计把样例当对象。
     """
     root = tmp_path / "objects"
-    monkeypatch.setattr("app.config.UPLOAD_DIR", root)
+    monkeypatch.setattr("app.platform.config.UPLOAD_DIR", root)
     return root
 
 
@@ -171,7 +171,7 @@ def test_local_cleanup_errors_propagate_instead_of_claiming_success(tmp_path, mo
         calls.append(str(path))
         raise PermissionError("device busy")
 
-    monkeypatch.setattr("app.services.object_storage.shutil.rmtree", busy_rmtree)
+    monkeypatch.setattr("app.adapters.storage.object_storage.shutil.rmtree", busy_rmtree)
 
     with pytest.raises(PermissionError):
         storage.delete_prefix("tenant/job")
@@ -189,23 +189,23 @@ def test_s3_treats_missing_objects_as_absent_and_other_failures_as_errors():
 
 
 def test_build_object_storage_follows_current_config(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.config.STORAGE_BACKEND", "local")
-    monkeypatch.setattr("app.config.UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr("app.platform.config.STORAGE_BACKEND", "local")
+    monkeypatch.setattr("app.platform.config.UPLOAD_DIR", tmp_path)
 
     storage = build_object_storage()
     assert isinstance(storage, LocalStorage)
     storage.put("tenant/job/a.pdf", io.BytesIO(b"a"))
     assert (tmp_path / "tenant" / "job" / "a.pdf").is_file()
 
-    monkeypatch.setattr("app.config.STORAGE_BACKEND", "dfs")
+    monkeypatch.setattr("app.platform.config.STORAGE_BACKEND", "dfs")
     with pytest.raises(RuntimeError, match="STORAGE_BACKEND"):
         build_object_storage()
 
 
 def test_build_object_storage_requires_endpoint_for_s3(monkeypatch):
-    monkeypatch.setattr("app.config.STORAGE_BACKEND", "s3")
-    monkeypatch.setattr("app.config.S3_ENDPOINT_URL", "")
-    monkeypatch.setattr("app.config.S3_BUCKET", "")
+    monkeypatch.setattr("app.platform.config.STORAGE_BACKEND", "s3")
+    monkeypatch.setattr("app.platform.config.S3_ENDPOINT_URL", "")
+    monkeypatch.setattr("app.platform.config.S3_BUCKET", "")
 
     with pytest.raises(RuntimeError, match="S3_ENDPOINT_URL"):
         build_object_storage()

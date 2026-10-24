@@ -10,9 +10,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.config import DISPATCH_BATCH_SIZE
+from app.platform.config import DISPATCH_BATCH_SIZE
 from app.contexts.processing import dispatch
-from app.contexts.processing.broker import TransportError
+from app.adapters.broker.amqp import TransportError
 
 logger = logging.getLogger("docpilot.dispatcher")
 

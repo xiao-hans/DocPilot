@@ -44,7 +44,7 @@ from app.contexts.search.domain import SearchEntry
 from app.contexts.templates.domain import Template, TemplateVersion
 from app.contexts.webhooks.domain import WebhookDelivery, WebhookEndpoint
 from app.contexts.quota.domain import TenantQuota
-from app.db import (  # noqa: E402
+from app.platform.db import (  # noqa: E402
     SessionLocal,
     assert_disposable_database,
     engine,
@@ -56,8 +56,8 @@ from app.models.account import AuthSession, BootstrapState, Membership, Tenant, 
 from app.models.document import Document, DocumentLabel, DocumentVersion  # noqa: E402
 from app.models.outbox import DomainEventRecord  # noqa: E402
 from app.models.persistent_job import PersistentJob  # noqa: E402
-from app.security import hash_password  # noqa: E402
-from app.services.job_manager import get_job_manager  # noqa: E402
+from app.platform.security import hash_password  # noqa: E402
+from app.contexts.processing.manager import get_job_manager  # noqa: E402
 
 if _PG_TEST_URL:
     # 重建 schema 会清空该库，因此先做一次性库命名校验：
@@ -124,7 +124,7 @@ def pinned_run_form(request, monkeypatch: pytest.MonkeyPatch) -> None:
     """
     if request.node.get_closest_marker("broker"):
         return
-    monkeypatch.setattr("app.api.workspace_jobs.QUEUE_ENABLED", False)
+    monkeypatch.setattr("app.contexts.processing.api.QUEUE_ENABLED", False)
     monkeypatch.setattr("app.contexts.processing.service.QUEUE_ENABLED", False)
 
 
@@ -175,11 +175,11 @@ def client():
 def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """把租户任务 API 的上传/输出目录指向用例私有目录。
 
-    上传目录改的是 `app.config`：写入端与解析端都按当前配置取根目录，只 patch 其中一侧
+    上传目录改的是 `app.platform.config`：写入端与解析端都按当前配置取根目录，只 patch 其中一侧
     会让对象写到 tmp、读回真实目录。
     """
-    monkeypatch.setattr("app.config.UPLOAD_DIR", tmp_path)
-    monkeypatch.setattr("app.api.workspace_jobs.OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr("app.platform.config.UPLOAD_DIR", tmp_path)
+    monkeypatch.setattr("app.contexts.processing.api.OUTPUT_DIR", tmp_path)
     return tmp_path
 
 

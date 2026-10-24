@@ -9,10 +9,10 @@ from __future__ import annotations
 import logging
 import threading
 
-from app.config import WEBHOOK_MASTER_KEY, WEBHOOK_POLL_SECONDS
+from app.platform.config import WEBHOOK_MASTER_KEY, WEBHOOK_POLL_SECONDS
 from app.contexts.webhooks.delivery import HttpxTransport, deliver_round
 from app.contexts.webhooks.service import require_master_key
-from app.request_context import configure_logging
+from app.platform.request_context import configure_logging
 
 
 def main() -> None:

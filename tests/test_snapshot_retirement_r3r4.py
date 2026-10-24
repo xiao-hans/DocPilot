@@ -15,11 +15,11 @@ from sqlalchemy import select
 
 from app.contexts.processing.domain import JobAttempt
 from app.contexts.templates.domain import Template, TemplateVersion
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.models.document import Document, DocumentVersion
 from app.models.persistent_job import PersistentJob
 from app.models.schema import INVOICE_TEMPLATE
-from app.services.snapshot_retirement import backfill, reconcile
+from app.contexts.processing.retirement import backfill, reconcile
 
 FIELDS = json.loads(json.dumps(INVOICE_TEMPLATE))
 NOW = datetime.now(timezone.utc)

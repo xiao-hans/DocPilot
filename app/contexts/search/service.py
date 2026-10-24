@@ -11,54 +11,23 @@ from sqlalchemy.orm import Session
 
 from app.contexts.search import repository
 from app.contexts.search.backend import get_search_backend
-from app.contexts.search.domain import DEFAULT_FIELD_NAME, SEARCH_KINDS, SearchEntry
-from app.errors import AccessError
-from app.services.text_safety import without_nul
+from app.contexts.search.domain import SEARCH_KINDS, SearchEntry
+from app.contexts.search.indexing import build_wanted_entries
+from app.platform.errors import AccessError
 
 MIN_QUERY_CHARS = 2
 MAX_QUERY_CHARS = 60
 SNIPPET_RADIUS = 40
 PAGE_MAX = 100
-MAX_FIELD_NAME_CHARS = 120
 
-
-def _content_of(value: object) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, (int, float, bool)):
-        return str(value)
-    # 列表/字典按稳定顺序展开：检索读模型不允许出现"无法比较"的原始对象。
-    return " ".join(_content_of(item) for item in _flatten(value))
-
-
-def _flatten(value: Any) -> list[Any]:
-    if isinstance(value, dict):
-        return [value[key] for key in sorted(value)]
-    if isinstance(value, (list, tuple)):
-        return list(value)
-    return [value]
-
-
-def build_wanted_entries(
-    *, filename: str, text: str, values: dict[str, Any]
-) -> dict[tuple[str, str], str]:
-    """把一次重建的"来源"整理成 `(kind, field_name) → content`。
-
-    抽出来是为了让默认后端（`backend.SqlSearchBackend`）与 service 共用同一份来源规则：
-    复制一份会让"来源有哪些"这件事出现两个权威，而它是 `docs/15 §5` 定下的语义
-    （文件名/原文/字段值三类同事务重建）。
-    """
-    wanted: dict[tuple[str, str], str] = {
-        ("filename", DEFAULT_FIELD_NAME): filename,
-        ("text", DEFAULT_FIELD_NAME): text,
-    }
-    for name, value in values.items():
-        wanted[("field", str(name)[:MAX_FIELD_NAME_CHARS])] = _content_of(value)
-    # PostgreSQL 的 text 与 json 都拒绝 NUL 字节，而 SQLite 照收；索引内容必须在入库前清掉，
-    # 否则一条脏文本会让整批写入回滚。
-    return {key: without_nul(content) for key, content in wanted.items()}
+__all__ = [
+    "MIN_QUERY_CHARS",
+    "MAX_QUERY_CHARS",
+    "PAGE_MAX",
+    "build_wanted_entries",
+    "reindex_version",
+    "search",
+]
 
 
 def reindex_version(

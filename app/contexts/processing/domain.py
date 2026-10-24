@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db import Base
+from app.platform.db import Base
 
 ATTEMPT_STATUSES = ("running", "succeeded", "failed", "timed_out")
 

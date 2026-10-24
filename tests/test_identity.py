@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.main import app
 from app.models.account import Membership, Tenant, User
 from conftest import BOOTSTRAP_TOKEN, PASSWORD
@@ -221,7 +221,7 @@ def test_tenantless_job_api_is_gone_in_every_environment(
     form = {"fields": "[]"}
 
     for env in ("development", "production"):
-        monkeypatch.setattr("app.config.APP_ENV", env)
+        monkeypatch.setattr("app.platform.config.APP_ENV", env)
         assert client.post("/api/jobs", files=upload, data=form).status_code == 404
         assert client.get("/api/jobs/" + NO_SUCH_JOB).status_code == 404
         assert client.get(f"/api/jobs/{NO_SUCH_JOB}/excel").status_code == 404

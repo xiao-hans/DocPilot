@@ -10,11 +10,11 @@ import logging
 import threading
 from typing import Any
 
-from app.config import DISPATCH_POLL_SECONDS, JOB_LEASE_SECONDS, QUEUE_ENABLED
+from app.platform.config import DISPATCH_POLL_SECONDS, JOB_LEASE_SECONDS, QUEUE_ENABLED
 from app.contexts.processing import dispatch
-from app.contexts.processing.broker import AmqpTransport
-from app.request_context import configure_logging
-from app.services.job_manager import get_job_manager
+from app.adapters.broker.amqp import AmqpTransport
+from app.platform.request_context import configure_logging
+from app.contexts.processing.manager import get_job_manager
 
 logger = logging.getLogger("docpilot.worker")
 

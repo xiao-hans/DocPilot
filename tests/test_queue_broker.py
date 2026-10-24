@@ -16,14 +16,14 @@ import pika
 import pytest
 from sqlalchemy import select
 
-from app.config import BROKER_URL
-from app.contexts.processing import broker as broker_store
+from app.platform.config import BROKER_URL
+from app.adapters.broker import amqp as broker_store
 from app.contexts.processing import dispatch as dispatch_store
 from app.contexts.processing import service as processing
-from app.contexts.processing.broker import AmqpTransport
+from app.adapters.broker.amqp import AmqpTransport
 from app.contexts.processing.dispatcher import Dispatcher
 from app.contexts.processing.domain import JobAttempt
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.models.dispatch import JobDispatch
 from app.models.persistent_job import PersistentJob
 from app.models.schema import INVOICE_TEMPLATE
@@ -49,7 +49,7 @@ def require_real_broker() -> None:
 def queue_mode(monkeypatch: pytest.MonkeyPatch) -> str:
     """队列模式 + 本用例专用队列名（在登记派发行之前生效）。"""
     queue = f"docpilot.it.{uuid.uuid4().hex[:12]}"
-    monkeypatch.setattr("app.api.workspace_jobs.QUEUE_ENABLED", True)
+    monkeypatch.setattr("app.contexts.processing.api.QUEUE_ENABLED", True)
     monkeypatch.setattr(dispatch_store, "QUEUE_NAME", queue)
     return queue
 

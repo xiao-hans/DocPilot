@@ -27,10 +27,10 @@ DATABASE_URL = (
 if not DATABASE_URL:
     sys.exit("缺少 MIGRATION_GATE_DATABASE_URL 或 TEST_DATABASE_URL（见 .env.example）")
 
-# migrations/env.py 用 app.config.DATABASE_URL 覆盖连接串，因此必须在导入应用配置前落定环境变量。
+# migrations/env.py 用 app.platform.config.DATABASE_URL 覆盖连接串，因此必须在导入应用配置前落定环境变量。
 os.environ["DATABASE_URL"] = DATABASE_URL
 
-from app.db import assert_disposable_database  # noqa: E402
+from app.platform.db import assert_disposable_database  # noqa: E402
 
 # 门禁会 DROP SCHEMA public 并执行 downgrade，库名不合规则直接退出。
 GATE_DB = assert_disposable_database(DATABASE_URL)

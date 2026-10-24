@@ -84,7 +84,7 @@
 
 - 路由挂在租户上下文下，创建/轮换/删除要求 `owner` 或 `admin`；列表与投递明细允许 `member` 读（排障需要），
   `reviewer` 不开放。
-- 审计动作登记进 `app/services/audit.py` 的白名单：`webhook.endpoint_created` / `_rotated` / `_paused` /
+- 审计动作登记进 `app/shared/audit.py` 的白名单：`webhook.endpoint_created` / `_rotated` / `_paused` /
   `_resumed` / `_deleted`，只记 `endpoint_id`、`url_host`（不记完整 URL 的 path 与 query，那可能带 token）、
   `secret_version`、`event_types` 数量。**投递本身不写审计**：一次事件 × N 个端点 × 重试会产生大量行，
   审计面会被噪声淹没；明细以 `webhook_deliveries` 为准。

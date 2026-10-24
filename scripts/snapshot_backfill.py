@@ -20,8 +20,8 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(BASE_DIR / ".env")
 
-from app.db import SessionLocal  # noqa: E402
-from app.services.snapshot_retirement import backfill  # noqa: E402
+from app.platform.db import SessionLocal  # noqa: E402
+from app.contexts.processing.retirement import backfill  # noqa: E402
 
 
 def main() -> int:

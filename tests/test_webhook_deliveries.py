@@ -21,10 +21,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app import config
+from app.platform import config
 from app.contexts.webhooks import delivery
 from app.contexts.webhooks.domain import WebhookDelivery, WebhookEndpoint
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 
 from tests.test_webhooks import MASTER, _base, _create_endpoint, _record_event
 

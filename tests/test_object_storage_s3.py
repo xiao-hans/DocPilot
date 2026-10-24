@@ -19,11 +19,11 @@ from pathlib import Path
 import pytest
 from botocore.exceptions import ClientError
 
-from app.config import S3_ACCESS_KEY, S3_BUCKET, S3_ENDPOINT_URL, S3_REGION, S3_SECRET_KEY
-from app.db import SessionLocal
+from app.platform.config import S3_ACCESS_KEY, S3_BUCKET, S3_ENDPOINT_URL, S3_REGION, S3_SECRET_KEY
+from app.platform.db import SessionLocal
 from app.models.document import DocumentVersion
 from app.models.schema import INVOICE_TEMPLATE
-from app.services.object_storage import LocalStorage, S3Storage
+from app.adapters.storage.object_storage import LocalStorage, S3Storage
 
 pytestmark = pytest.mark.s3
 
@@ -80,8 +80,8 @@ def s3(request) -> Iterator[S3Storage]:
 def s3_mode(request, monkeypatch) -> S3Storage:
     """把应用整体切到 S3 后端，并给本次用例一个独立对象前缀。"""
     prefix = f"docpilot-it/{uuid.uuid4().hex[:12]}"
-    monkeypatch.setattr("app.config.STORAGE_BACKEND", "s3")
-    monkeypatch.setattr("app.config.S3_KEY_PREFIX", prefix)
+    monkeypatch.setattr("app.platform.config.STORAGE_BACKEND", "s3")
+    monkeypatch.setattr("app.platform.config.S3_KEY_PREFIX", prefix)
     storage = _bucket(prefix)
     request.addfinalizer(lambda: _drain(storage))
     return storage
@@ -93,8 +93,8 @@ def to_s3(request, monkeypatch):
 
     def enable() -> S3Storage:
         prefix = f"docpilot-it/{uuid.uuid4().hex[:12]}"
-        monkeypatch.setattr("app.config.STORAGE_BACKEND", "s3")
-        monkeypatch.setattr("app.config.S3_KEY_PREFIX", prefix)
+        monkeypatch.setattr("app.platform.config.STORAGE_BACKEND", "s3")
+        monkeypatch.setattr("app.platform.config.S3_KEY_PREFIX", prefix)
         storage = _bucket(prefix)
         request.addfinalizer(lambda: _drain(storage))
         return storage
@@ -190,7 +190,7 @@ def test_backfill_copies_verifies_and_is_idempotent(
     owner_workspace, tmp_path, monkeypatch, make_invoice_pdf, to_s3, capsys
 ):
     upload_root = tmp_path / "legacy-uploads"
-    monkeypatch.setattr("app.config.UPLOAD_DIR", upload_root)
+    monkeypatch.setattr("app.platform.config.UPLOAD_DIR", upload_root)
     job_id = _upload(owner_workspace, make_invoice_pdf)  # 默认 local 后端：对象先落在本机目录
     tenant_id = owner_workspace["tenant_id"]
     with SessionLocal() as db:

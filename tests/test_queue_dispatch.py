@@ -16,10 +16,10 @@ from sqlalchemy import func, select, update
 
 from app.contexts.processing import dispatch as dispatch_store
 from app.contexts.processing import service as processing
-from app.contexts.processing.broker import TransportError
+from app.adapters.broker.amqp import TransportError
 from app.contexts.processing.dispatcher import Dispatcher
 from app.contexts.processing.domain import JobAttempt
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.models.account import Tenant
 from app.models.dispatch import JobDispatch
 from app.models.job import JobStatus
@@ -46,7 +46,7 @@ class RecordingTransport:
 @pytest.fixture()
 def queue_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     """让上传端点不再进程内执行，任务停在 queued 等派发。"""
-    monkeypatch.setattr("app.api.workspace_jobs.QUEUE_ENABLED", True)
+    monkeypatch.setattr("app.contexts.processing.api.QUEUE_ENABLED", True)
 
 
 def _upload(workspace: dict, pdf: Path):

@@ -12,11 +12,11 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import select
 
-from app import config
+from app.platform import config
 from app.contexts.webhooks import delivery, service, signing, targets
 from app.contexts.webhooks.domain import WebhookDelivery, WebhookEndpoint
-from app.db import SessionLocal
-from app.services import outbox
+from app.platform.db import SessionLocal
+from app.shared import outbox
 
 MASTER = "test-master-key-please-rotate"
 
@@ -324,7 +324,7 @@ def test_url_policy_rejects_insecure_and_credentials(owner_workspace):
     assert _create_endpoint(owner_workspace, url="https://u:pw@example.com/hook").status_code == 422
     assert _create_endpoint(owner_workspace, url="ftp://example.com/hook").status_code == 422
     # 打开本机开关后回环 http 才允许
-    from app import config as cfg
+    from app.platform import config as cfg
 
     cfg.WEBHOOK_ALLOW_INSECURE_TARGETS = True
     try:
@@ -385,7 +385,7 @@ def test_role_matrix_and_cross_tenant_invisibility(owner_workspace, identity, me
 
     # 跨租户的"看不见"在服务层判：别人的端点 ID 在本租户里查就是 404，不是 403，
     # 也不带任何"这个 ID 存在"的信息。
-    from app.errors import AccessError
+    from app.platform.errors import AccessError
 
     foreign = _create_endpoint(other).json()["endpoint"]["id"]
     with SessionLocal() as db:

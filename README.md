@@ -45,27 +45,41 @@
 
 ```
 app/
-  main.py            FastAPI 入口，挂载全部 router
-  config.py          全部配置来自环境变量，带范围钳制
-  db.py              Engine、SessionLocal、一次性库命名守卫
-  security.py        PBKDF2-SHA256（60 万轮）、令牌生成与摘要
-  dispatcher.py      python -m app.dispatcher
-  worker.py          python -m app.worker
-  webhooks.py        python -m app.webhooks
-  api/               认证、租户、任务、成员四个路由模块与依赖
-  contexts/          9 个限界上下文：automation、documents、operations、
-                     processing、quota、review、search、templates、webhooks
-  models/            ORM 模型
-  services/          解析、提取、对象存储、任务仓库、导出、审计等
+  main.py            FastAPI 入口，装配根：uvicorn app.main:app
+  dispatcher.py      装配根：python -m app.dispatcher
+  worker.py          装配根：python -m app.worker
+  webhooks.py        装配根：python -m app.webhooks
+  platform/          与业务无关的运行时基础设施
+    config.py          全部配置来自环境变量，带范围钳制
+    db.py              Engine、SessionLocal、一次性库命名守卫
+    errors.py          HTTP 错误映射
+    security.py        PBKDF2-SHA256（60 万轮）、令牌生成与摘要
+    request_context.py 请求 ID 的 ContextVar 与日志过滤器
+    http/dependencies.py 认证与租户授权依赖
+  shared/            被多个上下文复用的纯逻辑（不依赖上下文与适配器）
+    audit.py  outbox.py  timestamps.py  text_safety.py  export_files.py
+  adapters/          外部世界的技术实现（不依赖上下文）
+    storage/           对象存储与文档落盘
+    parsing/           PDF 文本、扫描件 OCR、解析调度
+    extraction/        LLM 与 mock 提取器、提示词
+    broker/amqp.py     RabbitMQ 传输
+    exports/           XLSX 与 CSV 生成
+  models/            只装表定义（ORM / dataclass / Pydantic schema）
+  contexts/          10 个限界上下文：automation、documents、identity、
+                     operations、processing、quota、review、search、
+                     templates、webhooks
 migrations/versions/ 12 个 Alembic 修订
-tests/               37 个文件，422 项用例
-scripts/             22 个门禁、演练、回填与核对脚本
+tests/               38 个文件，422 项用例
+scripts/             23 个门禁、演练、回填与核对脚本
 frontend/            Vue 3 前端与 Playwright 用例
 docs/                29 个 Markdown：编号文档 01–23、4 篇 ADR、1 份索引、1 份实施计划
 deploy/postgres/     首次初始化数据卷时创建测试库
 ```
 
-规模参考（按 `git ls-files` 统计，不含 `__pycache__`）：`app/` 98 个 Python 文件、11,389 行；`tests/` 37 个文件、11,067 行；`scripts/` 22 个（16 py + 6 sh）；`docs/` 29 个 Markdown（含 4 篇 ADR）。
+`app/models/` 只装表定义，不导入任何上下文。全表注册发生在 `migrations/env.py`——它是
+`Base.metadata` 的唯一消费者，所以上下文自己的表也在那里导入（`docs/12 §7`）。
+
+规模参考（按磁盘统计，不含 `__pycache__`）：`app/` 106 个 Python 文件、11,426 行；`tests/` 38 个文件、11,291 行；`scripts/` 23 个（17 py + 6 sh）；`docs/` 29 个 Markdown（含 4 篇 ADR）。
 
 ## 快速开始（本机开发）
 
@@ -214,7 +228,7 @@ Webhook 写路径形态     17 项   0 失败，1.4 分钟（E2E_WEBHOOK=1，见
 
 ### 模块化单体加独立 Worker
 
-`app/contexts/` 下的 9 个限界上下文按 DDD 战略设计划分，每个上下文分 `domain`、`repository`、`service`、`api` 四层。`app/services/` 是存量层，只在触及的阶段搬移（见 `docs/adr/0003`）。
+`app/contexts/` 下的 10 个限界上下文按 DDD 战略设计划分，每个上下文分 `domain`、`repository`、`service`、`api` 四层（按需存在）。技术设施按层归位：`app/platform/`（运行时基础设施）、`app/shared/`（多上下文复用的纯逻辑）、`app/adapters/`（外部世界的技术实现）、`app/models/`（只装表定义）。分层规则见 `docs/12 §7`，由 `scripts/arch_check.py` 自动校验。
 
 三条硬规则：
 

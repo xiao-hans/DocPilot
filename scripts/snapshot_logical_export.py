@@ -58,8 +58,8 @@ load_dotenv(BASE_DIR / ".env")
 
 from sqlalchemy import select  # noqa: E402
 
-from app.config import DATABASE_URL  # noqa: E402
-from app.db import SessionLocal  # noqa: E402
+from app.platform.config import DATABASE_URL  # noqa: E402
+from app.platform.db import SessionLocal  # noqa: E402
 from app.models.persistent_job import PersistentJob  # noqa: E402
 
 MANIFEST_NAME = "manifest.json"
@@ -458,7 +458,7 @@ def replay(
     from sqlalchemy.engine import make_url
     from sqlalchemy.orm import sessionmaker
 
-    from app.db import assert_disposable_database
+    from app.platform.db import assert_disposable_database
 
     target_name = assert_disposable_database(target_url)
     rows_path = out / ROWS_NAME
@@ -634,7 +634,7 @@ def _rebuild_check(target_url: str, records: list[dict], *, content: bool = Fals
     from sqlalchemy.engine import make_url
     from sqlalchemy.orm import sessionmaker
 
-    from app.services.job_repository import IncompleteJobFacts, JobRepository
+    from app.contexts.processing.repository import IncompleteJobFacts, JobRepository
 
     engine = create_engine(target_url)
     Session = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)

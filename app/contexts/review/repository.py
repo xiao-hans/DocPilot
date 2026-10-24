@@ -9,7 +9,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.contexts.review.domain import DocumentText, ExtractionResult, ResultRevision
-from app.services.text_safety import without_nul
+from app.shared.text_safety import without_nul
 
 CONFIRMABLE = ("machine", "revised")
 REJECTABLE = ("machine", "revised", "confirmed")

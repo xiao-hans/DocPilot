@@ -10,14 +10,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.contexts.processing.domain import JobAttempt
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.main import app
 from app.models.job import FileInfo, Job, JobStatus, Progress
 from app.models.schema import FieldDefinition
 from app.models.persistent_job import PersistentJob
 from app.models.schema import INVOICE_TEMPLATE
-from app.services.job_manager import get_job_manager
-from app.services.job_repository import JobRepository
+from app.contexts.processing.manager import get_job_manager
+from app.contexts.processing.repository import JobRepository
 
 FIELDS = json.dumps(INVOICE_TEMPLATE)
 
@@ -122,7 +122,7 @@ def _seed_version(job: Job, tenant_id: str) -> None:
     """R5 之后读路径只认规范化源：给这条合成任务补一行版本记录。"""
     from datetime import datetime, timezone
 
-    from app.db import SessionLocal as _SessionLocal
+    from app.platform.db import SessionLocal as _SessionLocal
     from app.models.document import Document, DocumentVersion
 
     now = datetime.now(timezone.utc)
@@ -204,7 +204,7 @@ def test_upload_rejects_oversize_file_with_413(
     owner_workspace: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """超过 MAX_UPLOAD_MB → 413，且是"先校验后落盘"，租户目录不留半成品。"""
-    monkeypatch.setattr("app.api.workspace_jobs.MAX_UPLOAD_MB", 1)
+    monkeypatch.setattr("app.contexts.processing.api.MAX_UPLOAD_MB", 1)
     resp = _create_job(owner_workspace, [("big.pdf", b"x" * (1024 * 1024 + 1))])
     assert resp.status_code == 413
     assert "文件过大" in resp.json()["detail"]

@@ -17,9 +17,9 @@ from pathlib import Path
 
 import pytest
 
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.models.access import AuditEvent
-from app.request_context import (
+from app.platform.request_context import (
     MAX_CHARS,
     MIN_CHARS,
     REQUEST_ID_HEADER,
@@ -183,7 +183,7 @@ def test_audit_rows_without_a_request_context_stay_null(owner_workspace):
     避免留下无消费者的空字段"。现在有产生方了，但产生方只覆盖 HTTP 请求；
     Worker 与脚本路径仍然是 NULL，这条用例把两种情形分开钉住。
     """
-    from app.services import audit
+    from app.shared import audit
 
     with SessionLocal() as db:
         audit.record(
@@ -205,7 +205,7 @@ def test_audit_rows_without_a_request_context_stay_null(owner_workspace):
 
 def test_explicit_request_id_wins_over_the_context(owner_workspace):
     """显式传值优先：少数场景要把动作挂到另一个 ID 上（例如后台补偿）。"""
-    from app.services import audit
+    from app.shared import audit
 
     with SessionLocal() as db:
         event = audit.new_event(
@@ -224,7 +224,7 @@ def test_explicit_request_id_wins_over_the_context(owner_workspace):
 
 def test_configure_logging_installs_the_filter_once():
     """重复调用不得叠加过滤器：叠了会让每条日志被处理多遍。"""
-    from app.request_context import configure_logging
+    from app.platform.request_context import configure_logging
 
     configure_logging()
     configure_logging()
@@ -241,7 +241,7 @@ def test_formatted_log_line_contains_the_current_request_id(caplog):
     只看"过滤器已挂"证明不了格式串里有 `%(request_id)s`——两者缺一个都会让
     "日志里有 ID"变成空话。
     """
-    from app.request_context import LOG_FORMAT, configure_logging, reset, set_current
+    from app.platform.request_context import LOG_FORMAT, configure_logging, reset, set_current
 
     configure_logging()
     token = set_current("trace-rendered-00000001")
@@ -275,7 +275,7 @@ def test_bounds_are_what_the_docs_say():
 
 def test_worker_path_has_no_request_context(sandbox: Path):
     """后台处理不得继承任何请求 ID：它是另一条生命周期。"""
-    from app.services.job_manager import get_job_manager
+    from app.contexts.processing.manager import get_job_manager
 
     manager = get_job_manager()
     assert manager is not None

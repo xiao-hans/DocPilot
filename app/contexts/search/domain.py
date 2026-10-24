@@ -7,7 +7,7 @@ from datetime import datetime
 from sqlalchemy import DateTime, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db import Base
+from app.platform.db import Base
 
 SEARCH_KINDS = ("filename", "text", "field")
 DEFAULT_FIELD_NAME = ""

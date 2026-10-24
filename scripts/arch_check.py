@@ -23,8 +23,22 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 APP = ROOT / "app"
 BASELINE = ROOT / "tests" / "architecture_baseline.json"
 
-APP_ROOT_MODULES = {"app.config", "app.db", "app.errors", "app.security", "app.request_context"}
-COMPOSITION_ROOT = "app.main"
+APP_ROOT_MODULES = {
+    "app.platform.config",
+    "app.platform.db",
+    "app.platform.errors",
+    "app.platform.security",
+    "app.platform.request_context",
+}
+
+# 进程装配根：这四个入口负责把具体实现接到一起，依赖上下文是它们的职责而不是越界。
+# 它们也是 Dockerfile 与 docker-compose.yml 里声明的四个进程入口。
+COMPOSITION_ROOTS = {
+    "app.main",  # uvicorn app.main:app
+    "app.dispatcher",  # python -m app.dispatcher
+    "app.worker",  # python -m app.worker
+    "app.webhooks",  # python -m app.webhooks
+}
 
 
 def module_name(path: pathlib.Path) -> str:
@@ -92,16 +106,24 @@ def violations(edges: dict[str, set[str]], foreign: dict[str, set[str]]) -> list
             # R2 adapters 不得依赖业务
             if src.startswith("app.adapters.") and dep.startswith("app.contexts."):
                 add("R2", src, dep, "适配器不得依赖上下文")
-            # R6 上下文不得依赖遗留 app.api
-            if src.startswith("app.contexts.") and (dep == "app.api" or dep.startswith("app.api.")):
-                add("R6", src, dep, "上下文不得依赖 app.api")
+            # R4 platform 不得依赖业务或适配器
+            if src.startswith("app.platform.") and (
+                dep.startswith("app.contexts.") or dep.startswith("app.adapters.")
+            ):
+                add("R4", src, dep, "platform 层不得依赖上下文或适配器")
             # R5 models 不得依赖上下文
             if src.startswith("app.models.") and dep.startswith("app.contexts."):
                 add("R5", src, dep, "models 不得反向依赖上下文")
+            # R6 domain 不得依赖传输层（本上下文 api 或 platform.http）
+            if src.startswith("app.contexts.") and src.endswith(".domain") and (
+                dep.startswith("app.platform.http")
+                or (dep.startswith("app.contexts.") and ".api" in dep)
+            ):
+                add("R6", src, dep, "domain 不得依赖传输层")
             # R7 只有装配根可以依赖全部
             if (
-                src not in (COMPOSITION_ROOT,)
-                and not src.startswith(("app.runtime.", "app.contexts.", "app.api."))
+                src not in COMPOSITION_ROOTS
+                and not src.startswith(("app.runtime.", "app.contexts.", "app.adapters."))
                 and dep.startswith("app.contexts.")
                 and src not in APP_ROOT_MODULES
             ):

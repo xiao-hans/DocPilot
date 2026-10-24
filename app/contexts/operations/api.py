@@ -10,16 +10,16 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import (
+from app.platform.http.dependencies import (
     TenantContext,
     require_platform_admin,
     require_roles,
     AuthContext,
 )
-from app.config import BASE_DIR
+from app.platform.config import BASE_DIR
 from app.contexts.operations import service
-from app.db import SessionLocal, get_db
-from app.services import audit
+from app.platform.db import SessionLocal, get_db
+from app.shared import audit
 
 system_router = APIRouter(tags=["system"])
 router = APIRouter(prefix="/api/v1/tenants/{tenant_id}", tags=["operations"])

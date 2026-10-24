@@ -14,10 +14,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.contexts.quota.domain import UNLIMITED, TenantQuota
-from app.errors import AccessError
+from app.platform.errors import AccessError
 from app.models.document import Document, DocumentVersion
-from app.services import audit
-from app.services.timestamps import iso_utc
+from app.shared import audit
+from app.shared.timestamps import iso_utc
 
 # 上限本身也要有上限：没有它，一个手滑的 10^18 会一路乘成负数（BigInteger 也是有限位宽）。
 MAX_LIMIT = 10**14

@@ -3,8 +3,18 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from app.config import DATABASE_URL
-from app.db import Base
+from app.platform.config import DATABASE_URL
+from app.platform.db import Base
+
+# 全表注册点：`Base.metadata` 的唯一消费者在这里，所以上下文自己的表也必须在此导入。
+# 若放进 `app/models/__init__.py`，模型层就会反向依赖业务上下文（docs/12 §7.1 R5）。
+from app.contexts.automation import domain as automation_domain  # noqa: F401
+from app.contexts.processing import domain as processing_domain  # noqa: F401
+from app.contexts.quota import domain as quota_domain  # noqa: F401
+from app.contexts.review import domain as review_domain  # noqa: F401
+from app.contexts.search import domain as search_domain  # noqa: F401
+from app.contexts.templates import domain as templates_domain  # noqa: F401
+from app.contexts.webhooks import domain as webhooks_domain  # noqa: F401
 from app.models import access, account, dispatch, document, outbox, persistent_job  # noqa: F401
 
 config = context.config

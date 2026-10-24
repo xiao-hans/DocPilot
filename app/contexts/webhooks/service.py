@@ -16,7 +16,7 @@ from sqlalchemy import and_, exists, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app import config
+from app.platform import config
 from app.contexts.automation.domain import ALLOWED_EVENT_TYPES
 from app.contexts.webhooks import signing, targets
 from app.contexts.webhooks.domain import (
@@ -25,10 +25,10 @@ from app.contexts.webhooks.domain import (
     WebhookDelivery,
     WebhookEndpoint,
 )
-from app.errors import AccessError
+from app.platform.errors import AccessError
 from app.models.outbox import DomainEventRecord
-from app.services import audit
-from app.services.timestamps import iso_utc
+from app.shared import audit
+from app.shared.timestamps import iso_utc
 
 
 def _now() -> datetime:

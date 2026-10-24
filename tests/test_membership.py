@@ -11,13 +11,13 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.main import app
 from app.models.access import AuditEvent, Invitation
 from app.models.account import Membership, User
 from app.models.persistent_job import PersistentJob
 from app.models.schema import INVOICE_TEMPLATE
-from app.services import membership
+from app.contexts.identity import service as membership
 
 FIELDS = json.dumps(INVOICE_TEMPLATE)
 

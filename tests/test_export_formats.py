@@ -9,7 +9,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.models.access import AuditEvent
 from app.models.persistent_job import PersistentJob
 from app.models.schema import INVOICE_TEMPLATE

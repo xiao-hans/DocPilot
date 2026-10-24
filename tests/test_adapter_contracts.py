@@ -39,24 +39,24 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
-from app.api import workspace_jobs
+from app.contexts.processing import api as workspace_jobs
 from app.contexts.review.domain import DocumentText, ExtractionResult
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.models.document import DocumentVersion
 from app.models.schema import FieldDefinition
-from app.services import pipeline as pipeline_module
-from app.services.extraction import get_extractor
-from app.services.extraction.base import ExtractResult, ExtractorBase
-from app.services.extraction.mock import MockExtractor
-from app.services.job_manager import get_job_manager
-from app.services.object_storage import (
+from app.contexts.processing import pipeline as pipeline_module
+from app.adapters.extraction import get_extractor
+from app.adapters.extraction.base import ExtractResult, ExtractorBase
+from app.adapters.extraction.mock import MockExtractor
+from app.contexts.processing.manager import get_job_manager
+from app.adapters.storage.object_storage import (
     LocalStorage,
     ObjectStorage,
     build_object_storage,
     get_object_storage,
 )
-from app.services.parsing.base import SOURCE_PDF_TEXT, ParseResult
-from app.services.parsing.dispatcher import ParserDispatcher, get_dispatcher
+from app.adapters.parsing.base import SOURCE_PDF_TEXT, ParseResult
+from app.adapters.parsing.dispatcher import ParserDispatcher, get_dispatcher
 
 SENTINEL = "契约测试哨兵值"
 MARKER = "适配器契约标记-7f3a"
@@ -250,8 +250,8 @@ def test_dispatcher_and_extractor_resolve_the_factory_per_run(monkeypatch):
 
     显式注入仍然优先：构造参数传了实现时，工厂不参与。
     """
-    from app.services.extraction.base import ExtractResult, ExtractorBase
-    from app.services.parsing.dispatcher import ParserDispatcher
+    from app.adapters.extraction.base import ExtractResult, ExtractorBase
+    from app.adapters.parsing.dispatcher import ParserDispatcher
 
     class _Marker(ExtractorBase):
         def extract(self, text, fields, metadata=None) -> ExtractResult:
@@ -314,7 +314,7 @@ def test_extractor_factory_swap_reaches_the_production_path(
     所以那时的契约测试只能在类方法层替换，而"接口可替换"这句话最该被证明的地方
     正是工厂层。M17 闭合后，这条用例才写得出。
     """
-    from app.services.job_manager import get_job_manager
+    from app.contexts.processing.manager import get_job_manager
 
     sentinel = "工厂替换生效标记"
 
@@ -337,7 +337,7 @@ def test_object_storage_contract_is_satisfied_by_both_implementations(tmp_path: 
     新增一个抽象方法而某个后端没跟上时，这里会红，而不是等到线上调用才报
     `TypeError: Can't instantiate abstract class`。
     """
-    from app.services.object_storage import S3Storage
+    from app.adapters.storage.object_storage import S3Storage
 
     required = set(ObjectStorage.__abstractmethods__)
     for cls in (LocalStorage, S3Storage):

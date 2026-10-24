@@ -1,10 +1,12 @@
-"""应用数据模型；导入所有模型与上下文领域对象以注册 SQLAlchemy metadata。"""
+"""平台级 ORM 模型：账号、租户、文档、任务、派发与 outbox。
 
-from app.contexts.automation import domain as automation_domain  # noqa: F401
-from app.contexts.processing import domain as processing_domain  # noqa: F401
-from app.contexts.review import domain as review_domain  # noqa: F401
-from app.contexts.search import domain as search_domain  # noqa: F401
-from app.contexts.templates import domain as templates_domain  # noqa: F401
-from app.contexts.quota import domain as quota_domain  # noqa: F401
-from app.contexts.webhooks import domain as webhooks_domain  # noqa: F401
+这个包**只**装 `app/models/` 下的表。上下文自己的表（`processing`、`review`、
+`templates`、`search`、`automation`、`quota`、`webhooks`）由各自的 `domain.py`
+定义，本包不导入它们——导入会让模型层反向依赖业务上下文（`docs/12 §7.1` R5）。
+
+全表注册发生在 `migrations/env.py`：它是 `Base.metadata` 的唯一消费者。
+"""
+
 from app.models import access, account, dispatch, document, outbox, persistent_job  # noqa: F401
+
+__all__ = ["access", "account", "dispatch", "document", "outbox", "persistent_job"]

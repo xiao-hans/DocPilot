@@ -31,7 +31,7 @@ for candidate in ("/srv/docpilot", "."):
 CHECKS: list[tuple[str, callable]] = [
     (
         "M3 request_id 中间件",
-        lambda: __import__("app.request_context", fromlist=["REQUEST_ID_HEADER"]).REQUEST_ID_HEADER,
+        lambda: __import__("app.platform.request_context", fromlist=["REQUEST_ID_HEADER"]).REQUEST_ID_HEADER,
     ),
     (
         "M16 检索后端契约",
@@ -43,7 +43,7 @@ CHECKS: list[tuple[str, callable]] = [
         "M17 流水线注入点",
         lambda: "property"
         if isinstance(
-            __import__("app.services.pipeline", fromlist=["DocumentPipeline"])
+            __import__("app.contexts.processing.pipeline", fromlist=["DocumentPipeline"])
             .DocumentPipeline.__dict__.get("dispatcher"),
             property,
         )

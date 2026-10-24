@@ -22,11 +22,11 @@ from app.contexts.automation.domain import (
 )
 from app.contexts.automation import repository
 from app.contexts.documents import service as documents
-from app.errors import AccessError
+from app.platform.errors import AccessError
 from app.models.document import DocumentVersion
 from app.models.outbox import DomainEventRecord
-from app.services import audit
-from app.services.timestamps import iso_utc
+from app.shared import audit
+from app.shared.timestamps import iso_utc
 
 MAX_DISPATCH_BATCH = 100
 MAX_DETAIL_CHARS = 500

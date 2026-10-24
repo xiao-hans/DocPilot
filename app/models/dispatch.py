@@ -20,7 +20,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db import Base
+from app.platform.db import Base
 
 # ready: 待派发；published: 已进队列且拿到发布确认；claimed: Worker 持租约执行中；
 # settled: 该次派发已有结局（执行收口、任务已终态或被更高尝试取代）。

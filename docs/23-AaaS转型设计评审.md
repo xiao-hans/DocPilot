@@ -19,8 +19,8 @@ SWD 对 Tier 1 的要求是逐阶段确认：需求 → 设计 → 测试计划 
 
 | 已有资产 | 位置 | 对 AaaS 的可复用性 |
 |---|---|---|
-| 模型调用配置 | `app/config.py`：`AI_BASE_URL`、`AI_API_KEY`、`AI_MODEL`、`AI_TIMEOUT`、`AI_MAX_RETRIES`、`AI_TEMPERATURE` | **可直接复用**。已是"OpenAI 兼容接口"形态，换供应商只改配置 |
-| 提取契约 | `app/services/extraction/base.py`：`ExtractorBase.extract(text, fields, metadata) -> ExtractResult` | **可复用**。它就是"输入文本 + 字段定义 → 结构化结果"的接口，正是对外推理 API 的形状 |
+| 模型调用配置 | `app/platform/config.py`：`AI_BASE_URL`、`AI_API_KEY`、`AI_MODEL`、`AI_TIMEOUT`、`AI_MAX_RETRIES`、`AI_TEMPERATURE` | **可直接复用**。已是"OpenAI 兼容接口"形态，换供应商只改配置 |
+| 提取契约 | `app/adapters/extraction/base.py`：`ExtractorBase.extract(text, fields, metadata) -> ExtractResult` | **可复用**。它就是"输入文本 + 字段定义 → 结构化结果"的接口，正是对外推理 API 的形状 |
 | 两个实现 | `mock.py`（离线基线）、`llm.py`（`httpx` 直调兼容接口） | **可复用**。`mock` 让对外能力可以在无密钥环境里被端到端验证 |
 | 字段 schema 与类型强转 | `FieldDefinition` + `coerce_value` / `apply_type_coercion` | **可复用**。对外 API 的"输出形状由调用方给定"这条正是靠它 |
 | 多租户隔离 | 三层强制（路径依赖、显式 `tenant_id`、复合外键/部分唯一索引） | **可复用**。对外服务同样要"一个 key 只能看自己的东西" |

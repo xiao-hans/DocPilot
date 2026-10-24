@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app.contexts.automation.domain import EventRule, NotificationRequest, RuleRun
 from app.contexts.documents import service as documents_service
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.models.access import AuditEvent
 from app.models.outbox import DomainEventRecord
 from app.models.schema import INVOICE_TEMPLATE

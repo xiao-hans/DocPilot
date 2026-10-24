@@ -14,7 +14,7 @@ from datetime import datetime
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db import Base
+from app.platform.db import Base
 
 UNLIMITED = 0
 

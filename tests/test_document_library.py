@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.models.access import AuditEvent
 from app.models.schema import INVOICE_TEMPLATE
 

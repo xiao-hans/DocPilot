@@ -12,11 +12,11 @@ from sqlalchemy.orm import Session
 
 from app.contexts.templates import repository
 from app.contexts.templates.domain import Template, TemplateVersion
-from app.errors import AccessError
+from app.platform.errors import AccessError
 from app.models.schema import validate_fields
-from app.services import audit
-from app.services.timestamps import iso_utc
-from app.services import outbox
+from app.shared import audit
+from app.shared.timestamps import iso_utc
+from app.shared import outbox
 
 
 def _now() -> datetime:

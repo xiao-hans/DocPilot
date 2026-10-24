@@ -12,12 +12,12 @@ import pymupdf
 
 from app.models.job import Job, JobStatus, Progress
 from app.models.schema import FieldDefinition, validate_fields
-from app.services.extraction import ExtractionError, ExtractResult
-from app.services.extraction.base import ExtractorBase
-from app.services.job_manager import JobManager
-from app.services.parsing import CorruptedFileError, ParseResult
-from app.services.parsing.dispatcher import ParserDispatcher
-from app.services.pipeline import DocumentPipeline
+from app.adapters.extraction import ExtractionError, ExtractResult
+from app.adapters.extraction.base import ExtractorBase
+from app.contexts.processing.manager import JobManager
+from app.adapters.parsing import CorruptedFileError, ParseResult
+from app.adapters.parsing.dispatcher import ParserDispatcher
+from app.contexts.processing.pipeline import DocumentPipeline
 
 # ────────────────────────────────────────────
 # Helpers: 生成 PDF、构造假对象

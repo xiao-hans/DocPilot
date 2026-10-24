@@ -16,7 +16,7 @@ import httpx
 import pytest
 
 from app.models.schema import INVOICE_TEMPLATE, FieldDefinition, validate_fields
-from app.services.extraction import (
+from app.adapters.extraction import (
     ExtractionError,
     LLMExtractor,
     MockExtractor,
@@ -268,7 +268,7 @@ def test_number_coercion_failure_preserves_value_and_warns():
 
 def test_llm_preserves_uncoercible_number(monkeypatch):
     """经真实提取器路径：LLM 返回非数字字符串给 number 字段 → 保留原值 + warning。"""
-    monkeypatch.setattr("app.services.extraction.llm.AI_API_KEY", "test-key")
+    monkeypatch.setattr("app.adapters.extraction.llm.AI_API_KEY", "test-key")
     bad = json.dumps(
         {
             "发票号码": "01100200011100045239",
@@ -360,7 +360,7 @@ def test_build_prompt_resists_injection_structurally():
 
 
 def test_llm_requires_api_key(monkeypatch):
-    monkeypatch.setattr("app.services.extraction.llm.AI_API_KEY", "")
+    monkeypatch.setattr("app.adapters.extraction.llm.AI_API_KEY", "")
     with pytest.raises(ExtractionError):
         LLMExtractor().extract("任意文本", _invoice_fields())
 
@@ -371,7 +371,7 @@ def test_llm_requires_api_key(monkeypatch):
 
 
 def test_llm_fake_client_parses_valid_json_with_coercion(monkeypatch):
-    monkeypatch.setattr("app.services.extraction.llm.AI_API_KEY", "test-key")
+    monkeypatch.setattr("app.adapters.extraction.llm.AI_API_KEY", "test-key")
     client = FakeClient([_valid_llm_content()])
     result = LLMExtractor(client=cast("httpx.Client", client)).extract(
         INVOICE_TEXT, _invoice_fields()
@@ -393,8 +393,8 @@ def test_llm_fake_client_parses_valid_json_with_coercion(monkeypatch):
 
 
 def test_llm_retries_then_succeeds(monkeypatch):
-    monkeypatch.setattr("app.services.extraction.llm.AI_API_KEY", "test-key")
-    monkeypatch.setattr("app.services.extraction.llm.AI_MAX_RETRIES", 2)
+    monkeypatch.setattr("app.adapters.extraction.llm.AI_API_KEY", "test-key")
+    monkeypatch.setattr("app.adapters.extraction.llm.AI_MAX_RETRIES", 2)
     client = FakeClient(["这不是合法JSON", _valid_llm_content()])
     result = LLMExtractor(client=cast("httpx.Client", client)).extract(
         INVOICE_TEXT, _invoice_fields()
@@ -413,8 +413,8 @@ def test_llm_retries_then_succeeds(monkeypatch):
 
 
 def test_llm_persistent_invalid_json_raises(monkeypatch):
-    monkeypatch.setattr("app.services.extraction.llm.AI_API_KEY", "test-key")
-    monkeypatch.setattr("app.services.extraction.llm.AI_MAX_RETRIES", 2)
+    monkeypatch.setattr("app.adapters.extraction.llm.AI_API_KEY", "test-key")
+    monkeypatch.setattr("app.adapters.extraction.llm.AI_MAX_RETRIES", 2)
     client = FakeClient(["依然不是JSON"] * 5)
     with pytest.raises(ExtractionError):
         LLMExtractor(client=cast("httpx.Client", client)).extract(
@@ -429,7 +429,7 @@ def test_llm_persistent_invalid_json_raises(monkeypatch):
 
 
 def test_llm_non_200_status_raises(monkeypatch):
-    monkeypatch.setattr("app.services.extraction.llm.AI_API_KEY", "test-key")
+    monkeypatch.setattr("app.adapters.extraction.llm.AI_API_KEY", "test-key")
     client = FakeClient([(500, _valid_llm_content())])
     with pytest.raises(ExtractionError):
         LLMExtractor(client=cast("httpx.Client", client)).extract(
@@ -457,8 +457,8 @@ def test_get_extractor_factory():
 
 def test_llm_json_array_not_dict_raises(monkeypatch):
     """LLM 返回 JSON 数组（非 dict）→ ExtractionError，且走满重试。"""
-    monkeypatch.setattr("app.services.extraction.llm.AI_API_KEY", "test-key")
-    monkeypatch.setattr("app.services.extraction.llm.AI_MAX_RETRIES", 2)
+    monkeypatch.setattr("app.adapters.extraction.llm.AI_API_KEY", "test-key")
+    monkeypatch.setattr("app.adapters.extraction.llm.AI_MAX_RETRIES", 2)
     array_response = json.dumps([{"发票号码": "123"}])
     client = FakeClient([array_response])
     with pytest.raises(ExtractionError):
@@ -471,8 +471,8 @@ def test_llm_json_array_not_dict_raises(monkeypatch):
 
 def test_llm_empty_choices_raises(monkeypatch):
     """API 响应 choices 为空列表 → IndexError → ExtractionError。"""
-    monkeypatch.setattr("app.services.extraction.llm.AI_API_KEY", "test-key")
-    monkeypatch.setattr("app.services.extraction.llm.AI_MAX_RETRIES", 2)
+    monkeypatch.setattr("app.adapters.extraction.llm.AI_API_KEY", "test-key")
+    monkeypatch.setattr("app.adapters.extraction.llm.AI_MAX_RETRIES", 2)
     client = FakeClient([{"choices": []}])
     with pytest.raises(ExtractionError):
         LLMExtractor(client=cast("httpx.Client", client)).extract(
@@ -483,8 +483,8 @@ def test_llm_empty_choices_raises(monkeypatch):
 
 def test_llm_missing_content_in_message_raises(monkeypatch):
     """message 缺少 content 字段 → KeyError → ExtractionError。"""
-    monkeypatch.setattr("app.services.extraction.llm.AI_API_KEY", "test-key")
-    monkeypatch.setattr("app.services.extraction.llm.AI_MAX_RETRIES", 2)
+    monkeypatch.setattr("app.adapters.extraction.llm.AI_API_KEY", "test-key")
+    monkeypatch.setattr("app.adapters.extraction.llm.AI_MAX_RETRIES", 2)
     client = FakeClient([{"choices": [{"message": {}}]}])
     with pytest.raises(ExtractionError):
         LLMExtractor(client=cast("httpx.Client", client)).extract(

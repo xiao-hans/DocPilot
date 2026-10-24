@@ -15,11 +15,11 @@ import pytest
 from sqlalchemy import select
 
 from app.contexts.documents import integrity
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.models.access import AuditEvent
 from app.models.document import DocumentVersion
 from app.models.schema import INVOICE_TEMPLATE
-from app.services.document_storage import resolve_storage_path
+from app.adapters.storage.document_storage import resolve_storage_path
 
 SERIAL = "01100200011100045239"
 FIELDS = json.dumps(INVOICE_TEMPLATE)
@@ -97,7 +97,7 @@ def test_missing_object_is_not_reported_as_mismatch(owner_workspace, sandbox, ma
 def test_unreadable_object_carries_the_error_class(owner_workspace, make_invoice_pdf):
     """桶在、对象读不动（权限/端点抖动）要和"对象不在"分开报。"""
     document_id, _ = _upload_and_locate(owner_workspace, make_invoice_pdf(SERIAL))
-    import app.services.object_storage as object_storage
+    import app.adapters.storage.object_storage as object_storage
 
     class Exploding:
         def read_bytes(self, key: str) -> bytes:

@@ -11,8 +11,8 @@ import pymupdf
 import pytest
 from PIL import Image
 
-from app.config import MAX_PDF_PAGES
-from app.services.parsing.base import (
+from app.platform.config import MAX_PDF_PAGES
+from app.adapters.parsing.base import (
     SOURCE_IMAGE,
     SOURCE_PDF_SCAN,
     SOURCE_PDF_TEXT,
@@ -23,11 +23,11 @@ from app.services.parsing.base import (
     ParsingOptions,
     UnsupportedFormatError,
 )
-from app.services.parsing.dispatcher import ParserDispatcher
-from app.services.parsing.image_ocr import ImageOCRParser
-from app.services.parsing.ocr_engine import OCREngine
-from app.services.parsing.pdf_text import PDFTextParser
-from app.services.parsing.scanned_pdf import ScannedPDFParser
+from app.adapters.parsing.dispatcher import ParserDispatcher
+from app.adapters.parsing.image_ocr import ImageOCRParser
+from app.adapters.parsing.ocr_engine import OCREngine
+from app.adapters.parsing.pdf_text import PDFTextParser
+from app.adapters.parsing.scanned_pdf import ScannedPDFParser
 
 
 class FakeOCREngine(OCREngine):

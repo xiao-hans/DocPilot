@@ -20,12 +20,12 @@ from sqlalchemy import select
 from app.contexts.review import repository
 from app.contexts.review import service as review
 from app.contexts.review.domain import ExtractionResult
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.models.document import DocumentVersion
 from app.models.schema import INVOICE_TEMPLATE
-from app.services.extraction.base import ExtractResult, ExtractorBase
-from app.services.job_manager import get_job_manager
-from app.services.timestamps import iso_utc
+from app.adapters.extraction.base import ExtractResult, ExtractorBase
+from app.contexts.processing.manager import get_job_manager
+from app.shared.timestamps import iso_utc
 
 FIELDS = json.dumps(INVOICE_TEMPLATE)
 ISO_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
@@ -106,7 +106,7 @@ def test_machine_values_and_warnings_lose_nul_at_the_write_boundary(
 ) -> None:
     # 经工厂替换（维护轮 M17 起流水线每次执行时解析工厂，所以这里对生产路径生效）；
     # 显式注入仍优先，所以 `_pipeline.extractor` 在注入了实现时会盖过工厂。
-    monkeypatch.setattr("app.services.pipeline.get_extractor", lambda mode: _DirtyExtractor())
+    monkeypatch.setattr("app.contexts.processing.pipeline.get_extractor", lambda mode: _DirtyExtractor())
     monkeypatch.setattr(get_job_manager()._pipeline, "_injected_extractor", None)
     job_id = _upload(owner_workspace, make_invoice_pdf())
 
@@ -208,7 +208,7 @@ def test_no_hand_written_timestamp_serialisation_left_in_the_app() -> None:
     唯一豁免：`timestamps.py` 自身，以及把 `date`（不是时刻）格式化成 `YYYY-MM-DD` 的提取层。
     """
     root = Path(__file__).resolve().parent.parent / "app"
-    allowed = {"services/timestamps.py", "services/extraction/base.py"}
+    allowed = {"shared/timestamps.py", "adapters/extraction/base.py"}
     offenders: list[str] = []
     for source in sorted(root.rglob("*.py")):
         relative = source.relative_to(root).as_posix()
@@ -222,7 +222,7 @@ def test_no_hand_written_timestamp_serialisation_left_in_the_app() -> None:
                 and node.func.attr == "isoformat"
             ):
                 offenders.append(f"{relative}:{node.lineno}")
-    assert offenders == [], f"仍在手写时间戳序列化（应改用 app.services.timestamps.iso_utc）：{offenders}"
+    assert offenders == [], f"仍在手写时间戳序列化（应改用 app.shared.timestamps.iso_utc）：{offenders}"
 
 
 def test_iso_utc_normalises_naive_aware_and_missing_values() -> None:

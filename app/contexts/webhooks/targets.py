@@ -16,9 +16,9 @@ import ipaddress
 import socket
 from urllib.parse import urlparse
 
-from app import config
+from app.platform import config
 from app.contexts.webhooks.domain import MAX_URL_CHARS
-from app.errors import AccessError
+from app.platform.errors import AccessError
 
 _LOOPBACK_NAMES = {"localhost"}
 

@@ -17,9 +17,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.errors import AccessError
+from app.platform.errors import AccessError
 from app.models.document import Document, DocumentVersion
-from app.services.object_storage import get_object_storage
+from app.adapters.storage.object_storage import get_object_storage
 
 STATUS_MATCHED = "matched"
 STATUS_MISMATCHED = "mismatched"

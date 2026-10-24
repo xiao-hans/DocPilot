@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from app.contexts.quota import service
 from app.contexts.quota.domain import TenantQuota
 from app.contexts.quota.service import MAX_LIMIT
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.models.access import AuditEvent
 from app.models.document import Document, DocumentVersion
 from app.models.persistent_job import PersistentJob

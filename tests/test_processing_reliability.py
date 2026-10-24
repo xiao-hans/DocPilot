@@ -12,10 +12,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.config import JOB_MAX_ATTEMPTS
+from app.platform.config import JOB_MAX_ATTEMPTS
 from app.contexts.processing import service as processing
 from app.contexts.processing.domain import JobAttempt
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.main import app
 from app.models.access import AuditEvent
 from app.models.document import Document, DocumentVersion
@@ -24,9 +24,9 @@ from app.models.outbox import DomainEventRecord
 from app.models.persistent_job import PersistentJob
 from app.models.schema import FieldDefinition
 from app.models.schema import INVOICE_TEMPLATE
-from app.services import outbox
-from app.services.job_manager import get_job_manager
-from app.services.job_repository import JobRepository
+from app.shared import outbox
+from app.contexts.processing.manager import get_job_manager
+from app.contexts.processing.repository import JobRepository
 
 FIELDS = json.dumps(INVOICE_TEMPLATE)
 BS = chr(92)
@@ -235,7 +235,7 @@ def test_partial_batch_is_its_own_terminal_state(
 def test_outbox_events_are_written_with_the_business_transaction(
     owner_workspace: dict, sandbox: Path, make_invoice_pdf
 ) -> None:
-    from app.services.job_repository import JobRepository
+    from app.contexts.processing.repository import JobRepository
 
     def fail(self, job, documents, versions, audit_events=(), events=()):
         raise IntegrityError("INSERT", {}, RuntimeError("db down"))

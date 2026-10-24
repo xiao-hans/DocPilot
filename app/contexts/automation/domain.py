@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.db import Base
+from app.platform.db import Base
 
 # 只允许订阅已经存在的事件类型：新增事件必须同时出现在这里与 docs/13 §4.5。
 ALLOWED_EVENT_TYPES = (

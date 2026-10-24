@@ -14,14 +14,14 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from app.contexts.processing.domain import JobAttempt
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.models.access import AuditEvent
 from app.models.document import DocumentVersion
 from app.models.job import JobStatus
 from app.models.persistent_job import PersistentJob
 from app.contexts.review.domain import ExtractionResult
-from app.services import job_repository
-from app.services.job_repository import IncompleteJobFacts, JobRepository
+from app.contexts.processing import repository as job_repository
+from app.contexts.processing.repository import IncompleteJobFacts, JobRepository
 
 
 def _upload(workspace, make_invoice_pdf, serial="01100200011100045239"):

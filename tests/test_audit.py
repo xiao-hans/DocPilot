@@ -8,11 +8,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.main import app
 from app.models.access import AuditEvent, Invitation
 from app.models.schema import INVOICE_TEMPLATE
-from app.services import audit
+from app.shared import audit
 
 FIELDS = json.dumps(INVOICE_TEMPLATE)
 

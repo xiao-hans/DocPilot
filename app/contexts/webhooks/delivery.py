@@ -13,10 +13,10 @@ from urllib.parse import urlparse
 
 import httpx
 
-from app.config import WEBHOOK_TIMEOUT_SECONDS
+from app.platform.config import WEBHOOK_TIMEOUT_SECONDS
 from app.contexts.webhooks import service, signing, targets
 from app.contexts.webhooks.domain import WebhookEndpoint
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 
 logger = logging.getLogger("docpilot.webhooks")
 

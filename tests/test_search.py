@@ -8,7 +8,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 
 from app.contexts.search.domain import SearchEntry
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.models.schema import INVOICE_TEMPLATE
 
 FIELDS = json.dumps(INVOICE_TEMPLATE)

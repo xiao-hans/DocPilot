@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.db import assert_disposable_database
+from app.platform.db import assert_disposable_database
 
 
 def _url(database: str) -> str:
@@ -60,7 +60,7 @@ def test_sqlite_urls_are_judged_by_file_name(path: str, expected: str) -> None:
     assert assert_disposable_database(_sqlite_url(path)) == expected
 
 
-@pytest.mark.parametrize("path", ["C:/tmp/docpilot.sqlite3", "/tmp/data.sqlite3", "app.db"])
+@pytest.mark.parametrize("path", ["C:/tmp/docpilot.sqlite3", "/tmp/data.sqlite3", "app.platform.db"])
 def test_sqlite_non_disposable_paths_are_rejected(path: str) -> None:
     """开发库与普通文件名仍要拒：修的时候不能把守卫放宽成"路径里有 test 就行"。"""
     with pytest.raises(RuntimeError, match="一次性库命名"):

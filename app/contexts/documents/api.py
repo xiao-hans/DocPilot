@@ -9,10 +9,10 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import TenantContext, require_csrf, require_roles
+from app.platform.http.dependencies import TenantContext, require_csrf, require_roles
 from app.contexts.documents import integrity, service
-from app.services import audit
-from app.db import get_db
+from app.shared import audit
+from app.platform.db import get_db
 
 router = APIRouter(prefix="/api/v1/tenants/{tenant_id}", tags=["documents"])
 ALL_ROLES = ("owner", "admin", "member", "reviewer")

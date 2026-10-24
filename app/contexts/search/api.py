@@ -5,9 +5,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import TenantContext, require_roles
+from app.platform.http.dependencies import TenantContext, require_roles
 from app.contexts.search import service
-from app.db import get_db
+from app.platform.db import get_db
 
 router = APIRouter(prefix="/api/v1/tenants/{tenant_id}", tags=["search"])
 ALL_ROLES = ("owner", "admin", "member", "reviewer")

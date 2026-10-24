@@ -20,11 +20,11 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
-from app import config
+from app.platform import config
 from app.contexts.search import backend as backend_module
 from app.contexts.search.backend import SearchBackend, SqlSearchBackend, get_search_backend
 from app.contexts.search.domain import SearchEntry
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.models.schema import INVOICE_TEMPLATE
 
 FIELDS = json.dumps(INVOICE_TEMPLATE)

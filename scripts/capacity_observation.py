@@ -112,27 +112,27 @@ import pymupdf  # noqa: E402
 import sqlalchemy as sa  # noqa: E402
 from sqlalchemy import func, make_url, select  # noqa: E402
 
-from app.config import DISPATCH_POLL_SECONDS, JOB_MAX_ATTEMPTS, JOB_LEASE_SECONDS, MAX_UPLOAD_MB  # noqa: E402
+from app.platform.config import DISPATCH_POLL_SECONDS, JOB_MAX_ATTEMPTS, JOB_LEASE_SECONDS, MAX_UPLOAD_MB  # noqa: E402
 from app.contexts.documents import service as documents  # noqa: E402
 from app.contexts.processing import dispatch as dispatch_store  # noqa: E402
 from app.contexts.processing import service as processing  # noqa: E402
-from app.contexts.processing.broker import AmqpTransport, consumer_count  # noqa: E402
+from app.adapters.broker.amqp import AmqpTransport, consumer_count  # noqa: E402
 from app.contexts.processing.dispatcher import Dispatcher  # noqa: E402
 from app.contexts.processing.domain import JobAttempt  # noqa: E402
 from app.contexts.review import service as review  # noqa: E402
 from app.contexts.review.domain import ExtractionResult  # noqa: E402
 from app.contexts.search import service as search  # noqa: E402
-from app.db import SessionLocal, assert_disposable_database, engine, initialize_development_schema  # noqa: E402
+from app.platform.db import SessionLocal, assert_disposable_database, engine, initialize_development_schema  # noqa: E402
 from app.models.account import Membership, Tenant, User  # noqa: E402
 from app.models.dispatch import JobDispatch  # noqa: E402
 from app.models.document import Document, DocumentVersion  # noqa: E402
 from app.models.job import JobStatus, Progress  # noqa: E402
 from app.models.persistent_job import PersistentJob  # noqa: E402
 from app.models.schema import INVOICE_TEMPLATE, FieldDefinition  # noqa: E402
-from app.services.csv_builder import build as csv_build  # noqa: E402
-from app.services.excel_builder import ExcelBuilder  # noqa: E402
-from app.services.job_manager import get_job_manager  # noqa: E402
-from app.services.object_storage import build_object_storage  # noqa: E402
+from app.adapters.exports.csv import build as csv_build  # noqa: E402
+from app.adapters.exports.excel import ExcelBuilder  # noqa: E402
+from app.contexts.processing.manager import get_job_manager  # noqa: E402
+from app.adapters.storage.object_storage import build_object_storage  # noqa: E402
 from scripts.capacity_leak_probe import find_leaks  # noqa: E402
 from scripts.capacity_thresholds import evaluate as evaluate_thresholds  # noqa: E402
 from scripts.capacity_thresholds import render_section as render_threshold_section  # noqa: E402
@@ -1119,7 +1119,7 @@ def main() -> int:
 
     import pika
 
-    from app.config import BROKER_URL
+    from app.platform.config import BROKER_URL
 
     try:
         connection = pika.BlockingConnection(pika.URLParameters(BROKER_URL))

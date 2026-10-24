@@ -9,10 +9,10 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.contexts.review.domain import ExtractionResult
-from app.errors import AccessError
+from app.platform.errors import AccessError
 from app.models.document import Document, DocumentLabel, DocumentVersion
-from app.services import audit
-from app.services.timestamps import iso_utc
+from app.shared import audit
+from app.shared.timestamps import iso_utc
 
 RETENTION_STATUSES = ("active", "purge_scheduled", "purged")
 DOCUMENT_SOURCES = ("upload",)

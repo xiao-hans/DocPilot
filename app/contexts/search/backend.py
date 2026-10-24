@@ -29,9 +29,10 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app import config
+from app.platform import config
 from app.contexts.search import repository
 from app.contexts.search.domain import SearchEntry
+from app.contexts.search.indexing import build_wanted_entries
 
 
 class SearchBackend(ABC):
@@ -90,8 +91,6 @@ class SqlSearchBackend(SearchBackend):
         values: dict[str, Any],
         now: datetime,
     ) -> None:
-        from app.contexts.search.service import build_wanted_entries
-
         wanted = build_wanted_entries(filename=filename, text=text, values=values)
         existing = {
             (entry.kind, entry.field_name): entry

@@ -15,7 +15,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from app.models.job import Job, JobStatus
 from app.models.schema import INVOICE_TEMPLATE, validate_fields
-from app.services.excel_builder import ExcelBuilder
+from app.adapters.exports.excel import ExcelBuilder
 
 # 发票模板字段（校验后即为 FieldDefinition 列表，与真实流程一致）
 INVOICE_FIELDS = validate_fields(INVOICE_TEMPLATE)

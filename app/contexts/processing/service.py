@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from app.config import (
+from app.platform.config import (
     AI_MODEL,
     EXTRACTOR_MODE,
     JOB_ATTEMPT_TIMEOUT_SECONDS,
@@ -19,11 +19,11 @@ from app.config import (
 )
 from app.contexts.processing import dispatch
 from app.contexts.processing.domain import JobAttempt
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.models.document import DocumentVersion
 from app.models.persistent_job import PersistentJob
-from app.services import outbox
-from app.services.timestamps import iso_utc
+from app.shared import outbox
+from app.shared.timestamps import iso_utc
 
 TERMINAL_STATUSES = ("succeeded", "partial", "failed")
 RETRYABLE_STATUSES = ("partial", "failed")
@@ -55,7 +55,7 @@ def queue_health() -> dict[str, Any]:
     """
     if not QUEUE_ENABLED:
         return {"enabled": False, "reason": "queue_disabled"}
-    from app.contexts.processing import broker
+    from app.adapters.broker import amqp as broker
 
     backlog = dispatch.queue_backlog()
     consumers = broker.consumer_count()

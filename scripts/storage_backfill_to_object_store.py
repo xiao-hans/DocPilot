@@ -23,10 +23,10 @@ load_dotenv(BASE_DIR / ".env")
 
 from sqlalchemy import select  # noqa: E402
 
-from app.config import UPLOAD_DIR  # noqa: E402
-from app.db import SessionLocal  # noqa: E402
+from app.platform.config import UPLOAD_DIR  # noqa: E402
+from app.platform.db import SessionLocal  # noqa: E402
 from app.models.document import DocumentVersion  # noqa: E402
-from app.services.object_storage import LocalStorage, build_object_storage  # noqa: E402
+from app.adapters.storage.object_storage import LocalStorage, build_object_storage  # noqa: E402
 
 
 def _read_back_digest(storage, key: str) -> str:

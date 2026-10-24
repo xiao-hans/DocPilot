@@ -57,11 +57,11 @@ os.environ.update(
 import pika  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 
-from app.config import BROKER_URL  # noqa: E402
+from app.platform.config import BROKER_URL  # noqa: E402
 from app.contexts.processing import dispatch as dispatch_store  # noqa: E402
-from app.contexts.processing.broker import AmqpTransport  # noqa: E402
+from app.adapters.broker.amqp import AmqpTransport  # noqa: E402
 from app.contexts.processing.dispatcher import Dispatcher  # noqa: E402
-from app.db import SessionLocal, initialize_development_schema  # noqa: E402
+from app.platform.db import SessionLocal, initialize_development_schema  # noqa: E402
 from app.models.account import Tenant  # noqa: E402
 from app.models.dispatch import JobDispatch  # noqa: E402
 from app.models.persistent_job import PersistentJob  # noqa: E402

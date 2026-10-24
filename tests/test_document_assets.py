@@ -13,15 +13,15 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.models.document import Document, DocumentVersion
 from app.models.job import Job
 from app.models.persistent_job import PersistentJob
 from app.models.schema import INVOICE_TEMPLATE
-from app.services.document_storage import resolve_storage_path
-from app.services.job_repository import JobRepository
-from app.services.job_manager import get_job_manager
-from app.services.object_storage import LocalStorage, build_object_storage
+from app.adapters.storage.document_storage import resolve_storage_path
+from app.contexts.processing.repository import JobRepository
+from app.contexts.processing.manager import get_job_manager
+from app.adapters.storage.object_storage import LocalStorage, build_object_storage
 
 
 def test_document_version_rejects_cross_tenant_document(owner_workspace, other_workspace):

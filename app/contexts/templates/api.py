@@ -8,9 +8,9 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import TenantContext, require_csrf, require_roles
+from app.platform.http.dependencies import TenantContext, require_csrf, require_roles
 from app.contexts.templates import service
-from app.db import get_db
+from app.platform.db import get_db
 
 router = APIRouter(prefix="/api/v1/tenants/{tenant_id}/templates", tags=["templates"])
 

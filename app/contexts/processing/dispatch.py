@@ -13,8 +13,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
-from app.config import DISPATCH_REPUBLISH_SECONDS, JOB_LEASE_SECONDS, QUEUE_NAME
-from app.db import SessionLocal
+from app.platform.config import DISPATCH_REPUBLISH_SECONDS, JOB_LEASE_SECONDS, QUEUE_NAME
+from app.platform.db import SessionLocal
 from app.models.dispatch import JobDispatch
 from app.models.persistent_job import PersistentJob
 

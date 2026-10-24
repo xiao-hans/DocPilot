@@ -15,12 +15,12 @@ from sqlalchemy import select
 
 from app.contexts.processing.domain import JobAttempt
 from app.contexts.templates.domain import TemplateVersion
-from app.db import SessionLocal
+from app.platform.db import SessionLocal
 from app.models.document import Document, DocumentVersion
 from app.models.job import FileInfo, Job, JobStatus, Progress
 from app.models.persistent_job import PersistentJob
 from app.models.schema import FieldDefinition, INVOICE_TEMPLATE
-from app.services.job_repository import JobRepository
+from app.contexts.processing.repository import JobRepository
 
 FIELDS = [FieldDefinition(**item) for item in json.loads(json.dumps(INVOICE_TEMPLATE))]
 

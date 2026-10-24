@@ -12,8 +12,8 @@ from sqlalchemy import select
 
 from app.contexts.review import service as review
 from app.contexts.review.domain import DocumentText, ExtractionResult, ResultRevision
-from app.db import SessionLocal
-from app.errors import AccessError
+from app.platform.db import SessionLocal
+from app.platform.errors import AccessError
 from app.main import app
 from app.models.access import AuditEvent
 from app.models.schema import INVOICE_TEMPLATE
@@ -273,7 +273,7 @@ def test_crash_between_writes_does_not_duplicate_results(
 ) -> None:
     """TC-REC-005：重复处理同一任务时结果与修订保持幂等。"""
     from app.contexts.review import service as review
-    from app.services.job_manager import get_job_manager
+    from app.contexts.processing.manager import get_job_manager
 
     job_id = _upload(owner_workspace, make_invoice_pdf())
     manager = get_job_manager()
@@ -317,7 +317,7 @@ def test_human_revision_is_not_overwritten_by_reprocessing(
     )
 
     from app.contexts.review import service as review
-    from app.services.job_manager import get_job_manager
+    from app.contexts.processing.manager import get_job_manager
 
     job = get_job_manager().get_job(job_id, owner_workspace["tenant_id"])
     with SessionLocal() as db:

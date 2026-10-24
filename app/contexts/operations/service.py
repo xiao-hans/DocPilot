@@ -12,19 +12,19 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app import config
+from app.platform import config
 from app.contexts.automation.domain import EventRule, RuleRun
 from app.contexts.processing.domain import JobAttempt
 from app.contexts.review.domain import ExtractionResult, ResultRevision
 from app.contexts.search.domain import SearchEntry
-from app.errors import AccessError
+from app.platform.errors import AccessError
 from app.models.access import AuditEvent
 from app.models.account import Tenant
 from app.models.document import Document, DocumentVersion
 from app.models.outbox import DomainEventRecord
 from app.models.persistent_job import PersistentJob
-from app.services.job_repository import incomplete_rebuild_count
-from app.services.timestamps import iso_utc
+from app.contexts.processing.repository import incomplete_rebuild_count
+from app.shared.timestamps import iso_utc
 
 MAX_WINDOW_DAYS = 365
 DEFAULT_WINDOW_DAYS = 30
@@ -264,7 +264,7 @@ def storage_health() -> dict[str, Any]:
     目录里，没有外部依赖可问，段里只写 `checked: false`；声明走 s3 就必须真能列出对象，
     列不出就是故障——此时上传与下载都会失败，不能只让数据库健康把服务标成 ready。
     """
-    from app.services.object_storage import get_object_storage
+    from app.adapters.storage.object_storage import get_object_storage
 
     backend = config.STORAGE_BACKEND
     if backend != "s3":
