@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from app.platform.http.dependencies import TenantContext, require_csrf, require_roles
 from app.platform.config import MAX_FILES_PER_JOB, MAX_UPLOAD_MB, OUTPUT_DIR, QUEUE_ENABLED
 from app.contexts.processing import service as processing
+from app.contexts.documents import malware
 from app.contexts.quota import service as quota_service
 from app.contexts.templates import service as templates
 from app.platform.db import get_db
@@ -131,6 +132,8 @@ async def create_job(
     )
 
     manager = get_job_manager()
+    # 扫描器在循环外取一次：能力关闭时它是 None，循环里连分支都不用进。
+    scanner = malware.get_scanner()
     job = manager.create_job(
         files=[(name, "") for name, _content in checked],
         fields=validated_fields,
@@ -180,6 +183,11 @@ async def create_job(
             )
             documents.append(document)
             versions.append(document_version)
+            # 恶意文件检测（FR-010）：扫的是内存里的这份字节，不重读存储——刚写完就回读
+            # 只会多一次 I/O，还引入"读到的与写下的不是同一份"的可能。
+            # 结论写进版本行，随下面同一个事务提交。处置口径是仅标记不阻断
+            # （`docs/19 §7`），所以检出不让这次上传失败，只留痕。
+            malware.scan_into(scanner, content, document_version)
             events.append(
                 {
                     "tenant_id": tenant_id,
@@ -219,7 +227,9 @@ async def create_job(
                     object_id=job.id,
                     metadata={"file_count": len(versions)},
                 )
-            ],
+            ]
+            # 检出与"没扫成"各留一条审计；`clean` 与未扫不记，否则审计表被淹没。
+            + malware.audit_events_for(versions, tenant_id=tenant_id, actor_id=actor_id),
             events=events,
         )
     except (OSError, SQLAlchemyError, ValueError, RuntimeError) as exc:

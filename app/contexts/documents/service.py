@@ -176,6 +176,7 @@ def list_documents(
                         "media_type": version.media_type,
                         "size_bytes": version.size_bytes,
                         "checksum": version.checksum,
+                        "malware_status": version.malware_status,
                         "created_at": iso_utc(version.created_at),
                     }
                     for version in versions

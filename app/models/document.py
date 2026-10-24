@@ -83,6 +83,11 @@ class DocumentVersion(Base):
     text_chars: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ocr_applied: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     parse_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # 恶意文件检测（FR-010，DOC-DD-024）。NULL 表示"从未扫过"，它与 `clean` 必须能区分：
+    # 没扫过的版本不能被读成"扫过且干净"。处置口径是仅标记不阻断（`docs/19 §7`），
+    # 所以这两列只留痕，不参与任何状态流转。
+    malware_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    malware_signature: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     document: Mapped[Document] = relationship(back_populates="versions")

@@ -109,6 +109,14 @@ OCR_DPI = _env_int("OCR_DPI", 200)
 # mock | llm
 EXTRACTOR_MODE = os.getenv("EXTRACTOR_MODE", "mock")
 
+# ---- 恶意文件检测（FR-010，DOC-DD-024）----
+# none = 关闭（默认）；clamav = 本机 clamd 的 INSTREAM 接口。未知值在工厂里显式抛错。
+# 口径来自负责人答复（`docs/19 §7`）：仅标记，不隔离不阻断；默认关闭。
+MALWARE_SCAN_BACKEND = (os.getenv("MALWARE_SCAN_BACKEND", "none").strip().lower() or "none")
+CLAMAV_HOST = os.getenv("CLAMAV_HOST", "127.0.0.1").strip() or "127.0.0.1"
+CLAMAV_PORT = min(max(_env_int("CLAMAV_PORT", 3310), 1), 65535)
+CLAMAV_TIMEOUT_SECONDS = min(max(_env_int("CLAMAV_TIMEOUT_SECONDS", 10), 1), 300)
+
 # ---- 检索后端（NFR-004，docs/22）----
 # 当前只有 sql（search_entries 表 + lower(content) LIKE）。未知值在
 # `get_search_backend()` 里显式抛错，不静默退回默认实现。

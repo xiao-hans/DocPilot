@@ -37,6 +37,10 @@ METADATA_KEYS: dict[str, frozenset[str]] = {
     "document.metadata_updated": frozenset({"changed", "rule_id"}),
     # 内容签名核对是只读检查，审计记的是"查过几次、结果形状"，不记文件名与摘要正文。
     "document.integrity_checked": frozenset({"checked", "clean", "counts"}),
+    # 恶意文件检测（FR-010，DOC-DD-024）：只记结论与签名名，不记文件内容与路径。
+    # `clean` 不记——常态逐条入库会把审计面淹掉，真检出反而难找。
+    "document.malware_detected": frozenset({"document_id", "signature", "disposition"}),
+    "document.malware_scan_failed": frozenset({"document_id"}),
     "rule.created": frozenset({"event_type", "action_type", "version"}),
     "rule.updated": frozenset({"changed", "version"}),
     "platform.usage_viewed": frozenset({"scope", "window_days", "rows"}),
