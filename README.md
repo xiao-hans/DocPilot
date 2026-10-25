@@ -187,6 +187,9 @@ cd frontend && E2E_COMPOSE=1 npx playwright test
 # 文档交叉引用与用例编号核对
 .venv/Scripts/python.exe scripts/doc_ref_check.py
 
+# 文档与代码是否还对得上（引用的路径、用例名、marker 门禁命令）
+.venv/Scripts/python.exe scripts/doc_sync_check.py
+
 # 改了产品函数时：抽出被改的函数，真跑覆盖它的用例
 .venv/Scripts/python.exe scripts/assertion_sync_check.py --rev WORKTREE --run
 ```
@@ -204,18 +207,20 @@ rm .git/hooks/pre-commit
 
 它拦得住"改了产品却忘了看测试"，**拦不住"看了但没改对"**——静态那一层只能看见测试文件被动过，看不见断言内容是否仍然成立（`docs/06` TC-FUNC-070 是这条边界的真实来历）。所以它是复核入口，不是"断言必然同步"的证明。
 
-最近一次门禁读数（2026-10-24，串行）：
+最近一次门禁读数（2026-10-24，串行；后端套件与 clamd 套件为维护轮 M32 读数，浏览器端到端为 M31 读数）：
 
 ```
 迁移门禁              退出码 0
-基础套件 PostgreSQL   444 项  0 失败 0 错误 0 跳过
-基础套件 SQLite       444 项  0 失败 0 错误 0 跳过
+基础套件 PostgreSQL   446 项  0 失败 0 错误 0 跳过
+基础套件 SQLite       446 项  0 失败 0 错误 0 跳过
 -m s3                 8 项    0 失败 0 错误 0 跳过
 -m broker             4 项    0 失败 0 错误 0 跳过（须显式给 BROKER_URL）
-浏览器端到端 默认形态  17 项   0 失败，47.7 秒（含 2 项可访问性全量扫描）
-浏览器端到端 容器形态  17 项   0 失败，1.6 分钟（E2E_COMPOSE=1 E2E_APP_CONTAINERS=1；M27 读数，本轮未复跑）
-Webhook 写路径形态     17 项   0 失败，1.4 分钟（E2E_WEBHOOK=1，见 docs/06 §5.33；M27 读数，本轮未复跑）
+-m clamd              6 项    0 失败 0 错误 0 跳过（真实 clamd 在 127.0.0.1:3310）
+浏览器端到端 默认形态  18 项   0 失败（含 2 项可访问性全量扫描）
+浏览器端到端 容器形态  17 项   0 失败，1.6 分钟（E2E_COMPOSE=1 E2E_APP_CONTAINERS=1；M27 读数，未随本轮复跑）
+Webhook 写路径形态     17 项   0 失败，1.4 分钟（E2E_WEBHOOK=1，见 docs/06 §5.33；M27 读数，未随本轮复跑）
 文档交叉引用核对        scripts/doc_ref_check.py PASS（30 个文档，0 问题）
+文档与代码同步核对      scripts/doc_sync_check.py PASS（26 个文档，0 问题）
 断言同步提示            scripts/assertion_sync_check.py --rev WORKTREE --run
 ```
 
