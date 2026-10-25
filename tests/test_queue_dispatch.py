@@ -361,7 +361,6 @@ def test_dispatch_row_commits_with_brand_new_job() -> None:
                 status="queued",
                 created_at=now,
                 attempt_count=0,
-                snapshot={"status": "queued"},
             )
         )
         row = dispatch_store.create_pending(

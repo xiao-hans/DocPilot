@@ -349,7 +349,6 @@ def _force_failed_job(tenant_id: str, *, error: str | None, status: str = "faile
                 created_at=now,
                 finished_at=now,
                 attempt_count=2,
-                snapshot={"files": [], "fields": [], "status": status},
             )
         )
         # 必须先落父行：`JobAttempt` 只声明到 `processing_jobs` 的外键、没有 ORM relationship，

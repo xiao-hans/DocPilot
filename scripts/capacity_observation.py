@@ -867,7 +867,6 @@ def disk_usage() -> dict[str, object]:
     run_bytes = sum(path.stat().st_size for path in RUN_DIR.rglob("*") if path.is_file())
     with SessionLocal() as db:
         if DATABASE_URL.startswith("sqlite"):
-            database_bytes = int(db.scalar(select(func.sum(func.length(PersistentJob.snapshot)))) or 0)
             database_bytes = Path(make_url(DATABASE_URL).database or "").stat().st_size
             note = "SQLite 文件大小"
         else:

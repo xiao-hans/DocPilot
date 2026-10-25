@@ -501,10 +501,10 @@ def test_results_state_filter_rejects_unknown_values(
     assert _results(owner_workspace, state="已确认").status_code == 422
 
 
-def test_result_write_failure_leaves_no_snapshot_without_result(
+def test_result_write_failure_retries_and_lands_exactly_once(
     owner_workspace: dict, sandbox: Path, make_invoice_pdf, monkeypatch
 ) -> None:
-    """TC-REC-005：规范化结果写入失败时，快照不得先行推进成"有结果无规范化行"。"""
+    """TC-REC-005：规范化结果写入失败时事务回滚，重试后恰好落一行，不产生半套状态。"""
     from app.contexts.processing.domain import JobAttempt
     from app.models.persistent_job import PersistentJob
 
@@ -521,12 +521,10 @@ def test_result_write_failure_leaves_no_snapshot_without_result(
     job_id = _upload(owner_workspace, make_invoice_pdf())
 
     with SessionLocal() as db:
-        snapshot = db.get(PersistentJob, job_id).snapshot
+        assert db.get(PersistentJob, job_id) is not None
         results = db.query(ExtractionResult).filter(ExtractionResult.job_id == job_id).all()
         attempts = db.query(JobAttempt).filter(JobAttempt.job_id == job_id).all()
 
-    # R5 之后快照根本不带 result：这条不变量从"两边必须一致"升级为"只有一边有值"。
-    assert "result" not in snapshot, "快照不再承载提取结果，双真相少了一处"
-    assert len(results) == 1
+    assert len(results) == 1, "重试必须恰好落一行：既不丢结果，也不重复落"
     assert results[0].state == "machine"
     assert attempts and attempts[0].status in ("succeeded", "failed")

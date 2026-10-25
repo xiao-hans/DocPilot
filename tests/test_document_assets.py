@@ -128,7 +128,7 @@ def test_multi_file_upload_persists_one_document_per_file(
     assert response.status_code == 201, response.text
     job_id = response.json()["job_id"]
     with SessionLocal() as db:
-        task_snapshot = db.get(PersistentJob, job_id).snapshot
+        assert db.get(PersistentJob, job_id) is not None
         documents = db.query(Document).order_by(Document.id).all()
         versions = db.query(DocumentVersion).filter(DocumentVersion.job_id == job_id).all()
         assert len(documents) == len(versions) == 2
@@ -137,8 +137,7 @@ def test_multi_file_upload_persists_one_document_per_file(
         assert len({version.storage_key for version in versions}) == 2
         versions_by_filename = {version.original_filename: version for version in versions}
         assert len(versions_by_filename) == len(versions)
-        for task_file in task_snapshot["files"]:
-            version = versions_by_filename[task_file["name"]]
+        for version in versions:
             assert version.tenant_id == owner_workspace["tenant_id"]
             assert version.job_id == job_id
 
@@ -209,8 +208,8 @@ def test_uploaded_object_matches_the_persisted_storage_key(
     assert storage.read_bytes(version.storage_key) == pdf.read_bytes()
     target = resolve_storage_path(version.storage_key, sandbox)
     assert target.is_file() and sandbox in target.parents
-    # 快照不再携带本机绝对路径，跨机器恢复任务只依赖相对对象键。
-    assert all(entry["path"] == "" for entry in record.snapshot["files"])
+    # 持久化里只有相对对象键、没有本机绝对路径：跨机器恢复任务只依赖相对键。
+    assert not os.path.isabs(version.storage_key) and "\\" not in version.storage_key
 
 
 def test_object_write_failure_rolls_back_already_written_objects(

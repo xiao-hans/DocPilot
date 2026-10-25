@@ -280,10 +280,8 @@ def _force_failed(job_id: str, attempt_count: int) -> None:
     with SessionLocal() as db:
         record = db.get(PersistentJob, job_id)
         record.status = "failed"
+        record.progress = "done"
         record.attempt_count = attempt_count
-        snapshot = dict(record.snapshot)
-        snapshot.update({"status": "failed", "progress": "done", "error": "模拟失败"})
-        record.snapshot = snapshot
         db.commit()
     get_job_manager()._jobs.pop(job_id, None)
 
@@ -346,7 +344,7 @@ def _backdate_running_attempt(job_id: str, seconds: int) -> None:
         db.commit()
 
 
-def _add_finished_attempt(job_id: str, *, status: str, snapshot_status: str) -> None:
+def _add_finished_attempt(job_id: str, *, status: str) -> None:
     from datetime import timedelta
 
     with SessionLocal() as db:
@@ -366,10 +364,7 @@ def _add_finished_attempt(job_id: str, *, status: str, snapshot_status: str) -> 
             )
         )
         record.attempt_count = (record.attempt_count or 0) + 1
-        snapshot = dict(record.snapshot or {})
-        snapshot.update({"status": snapshot_status, "progress": "done"})
-        record.snapshot = snapshot
-        record.progress = "done"  # R2 的双写在生产里与快照同事务，这里跟着一起补
+        record.progress = "done"
         db.commit()
     assert attempt is None
 
@@ -377,7 +372,7 @@ def _add_finished_attempt(job_id: str, *, status: str, snapshot_status: str) -> 
 def test_startup_converges_crashed_job_without_requeue(sandbox: Path) -> None:
     """崩溃在两次提交之间的任务应被收敛到终态，而不是重新排队（TC-REC-004）。"""
     job = _seed_processing_job(attempt_count=1)
-    _add_finished_attempt(job.id, status="succeeded", snapshot_status="succeeded")
+    _add_finished_attempt(job.id, status="succeeded")
 
     with TestClient(app):  # 触发 lifespan 的恢复逻辑
         pass

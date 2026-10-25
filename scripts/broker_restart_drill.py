@@ -78,7 +78,6 @@ with SessionLocal() as db:
             status="queued",
             created_at=now,
             attempt_count=0,
-            snapshot={"status": "queued"},
         )
     )
     row = dispatch_store.create_pending(db, tenant_id=tenant_id, job_id=job_id, attempt_no=1)

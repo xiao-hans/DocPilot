@@ -1,8 +1,8 @@
-"""快照退役 R5（`docs/20 §3`）：读路径只认规范化源，重建不出来就报错。
+"""快照退役 R5+R6（`docs/20 §3`、`§6`）：读路径只认规范化源，重建不出来就报错。
 
-这条改的是行为不是等价搬迁，所以判据要能钉住两件事：把快照清空之后读路径**照样正确**
-（证明没有任何代码还读它），以及规范化源不完整时**必须失败**（证明不会拼出一个
-"字段为空、文件为零"的假任务）。
+R5 的判据是"清空快照之后读路径照样正确"，R6 把这条判据升级成结构本身：列已删除，
+"没有任何代码还读快照"由 schema 证明。规范化源不完整时**必须失败**的判据保留——
+不会拼出一个"字段为空、文件为零"的假任务。
 """
 
 from __future__ import annotations
@@ -37,26 +37,9 @@ def _upload(workspace, make_invoice_pdf, serial="01100200011100045239"):
     return response.json()["job_id"]
 
 
-def _blank_snapshot(job_id: str) -> None:
-    with SessionLocal() as db:
-        db.get(PersistentJob, job_id).snapshot = {}
-        db.commit()
-
-
-def test_read_path_survives_an_emptied_snapshot(owner_workspace, make_invoice_pdf):
-    job_id = _upload(owner_workspace, make_invoice_pdf)
-    before = owner_workspace["client"].get(
-        f"/api/v1/tenants/{owner_workspace['tenant_id']}/jobs/{job_id}"
-    ).json()
-    _blank_snapshot(job_id)
-    after = owner_workspace["client"].get(
-        f"/api/v1/tenants/{owner_workspace['tenant_id']}/jobs/{job_id}"
-    ).json()
-
-    assert after == before, "读路径仍依赖快照：清空快照后响应变了"
-    assert after["status"] == "succeeded" and after["progress"] == "done"
-    assert [item["name"] for item in after["files"]] == [item["name"] for item in before["files"]]
-    assert after["result"] and after["result"][0]["values"]["发票号码"] == "01100200011100045239"
+def test_snapshot_column_is_retired(owner_workspace):
+    """R6（docs/20 §6）删列之后，"没有任何代码还读快照"由结构本身证明：列不存在。"""
+    assert "snapshot" not in PersistentJob.__table__.columns
 
 
 def test_rebuilt_files_carry_the_real_storage_key(owner_workspace, make_invoice_pdf):
@@ -84,7 +67,6 @@ def test_incomplete_normalized_source_fails_loudly(owner_workspace):
                 status="succeeded",
                 created_at=now,
                 attempt_count=1,
-                snapshot={"fields": [], "files": [], "status": "succeeded", "progress": "done"},
             )
         )
         db.commit()
@@ -155,7 +137,6 @@ def test_observation_counter_is_visible_on_the_platform_usage_view(owner_workspa
                 status="succeeded",
                 created_at=datetime.now(timezone.utc),
                 attempt_count=1,
-                snapshot={"fields": [], "files": [], "status": "succeeded", "progress": "done"},
             )
         )
         db.commit()
@@ -184,7 +165,6 @@ def test_incomplete_rebuild_leaves_a_durable_audit_event(owner_workspace):
                 status="succeeded",
                 created_at=datetime.now(timezone.utc),
                 attempt_count=1,
-                snapshot={"fields": [{"name": "x"}], "files": [], "status": "succeeded", "progress": "done"},
             )
         )
         db.commit()

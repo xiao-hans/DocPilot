@@ -1,4 +1,4 @@
-"""处理任务快照的持久化仓库。"""
+"""处理任务的持久化仓库。"""
 
 from __future__ import annotations
 
@@ -49,10 +49,9 @@ class JobRepository:
         audit_events: Sequence[AuditEvent] = (),
         after: Callable[[Any], None] | None = None,
     ) -> None:
-        """快照、审计与 after 回调内的写入共享同一事务。"""
-        snapshot = self._snapshot(job)
+        """任务、审计与 after 回调内的写入共享同一事务。"""
         with self._sessions() as db:
-            self._save_job_record(db, job, tenant_id, owner_id, snapshot)
+            self._save_job_record(db, job, tenant_id, owner_id)
             self._sync_normalized_facts(db, job)
             db.add_all(audit_events)
             if after is not None:
@@ -60,29 +59,8 @@ class JobRepository:
             db.commit()
 
     @staticmethod
-    def _snapshot(job: Job) -> dict:
-        return {
-            "fields": [field.model_dump() for field in job.fields],
-            "files": [
-                {
-                    "name": f.name,
-                    "storage_key": f.storage_key,
-                    "path": f.path,
-                    "page_count": f.page_count,
-                    "chars": f.chars,
-                    "ocr_applied": f.ocr_applied,
-                    "error": f.error,
-                }
-                for f in job.files
-            ],
-            "status": job.status.value,
-            "progress": job.progress.value,
-            "warnings": job.warnings,
-            "error": job.error,
-        }
-
-    @staticmethod
-    def _save_job_record(db, job: Job, tenant_id: str, owner_id: str | None, snapshot: dict) -> None:
+    def _save_job_record(db, job: Job, tenant_id: str, owner_id: str | None) -> None:
+        fields = [field.model_dump() for field in job.fields]
         record = db.get(PersistentJob, job.id)
         if record is None:
             db.add(
@@ -95,22 +73,19 @@ class JobRepository:
                     attempt_count=job.attempt_count,
                     idempotency_key=job.idempotency_key,
                     template_version_id=job.template_version_id,
-                    snapshot=snapshot,
-                    # R2 双写（docs/20 §3）：与快照同一事务、同一个 Job 派生，
-                    # 两者不一致就是当场可发现的 bug，而不是日后对账才发现的漂移。
-                    field_definitions=snapshot["fields"],
-                    progress=snapshot["progress"],
+                    field_definitions=fields,
+                    # progress 与 status 同事务写入：进度不能说出状态没承认的话。
+                    progress=job.progress.value,
                 )
             )
             return
         if record.tenant_id != tenant_id:
             raise ValueError("任务租户归属不可变更")
         record.status = job.status.value
-        record.snapshot = snapshot
-        record.progress = snapshot["progress"]
+        record.progress = job.progress.value
         if record.field_definitions is None:
-            # 字段定义创建后不可变；已有值就不动，让 R4 的对账去发现"快照与列不一致"这种脏数据。
-            record.field_definitions = snapshot["fields"]
+            # 字段定义创建后不可变；已有值就不动。
+            record.field_definitions = fields
 
     @staticmethod
     def _sync_normalized_facts(db, job: Job) -> None:
@@ -156,7 +131,7 @@ class JobRepository:
         audit_events: Sequence[AuditEvent] = (),
         events: Sequence[Mapping[str, Any]] = (),
     ) -> None:
-        """在一个事务中保存任务快照、文档、文件版本、审计与领域事件。"""
+        """在一个事务中保存任务、文档、文件版本、审计与领域事件。"""
         tenant_id = job.tenant_id
         owner_id = job.owner_id
         if tenant_id is None or len(documents) != len(versions) or not documents:
@@ -179,9 +154,8 @@ class JobRepository:
             ):
                 raise ValueError("文件版本租户、文档或任务关联不一致")
 
-        snapshot = self._snapshot(job)
         with self._sessions() as db:
-            self._save_job_record(db, job, tenant_id, owner_id, snapshot)
+            self._save_job_record(db, job, tenant_id, owner_id)
             db.add_all(documents)
             db.add_all(versions)
             db.add_all(audit_events)

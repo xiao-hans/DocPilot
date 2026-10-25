@@ -36,7 +36,9 @@ R6 要 `ALTER TABLE processing_jobs DROP COLUMN snapshot`，**不可逆**：出�
 `--replay` 的目标库必须先由调用方建好表结构（`alembic upgrade head`），且库名必须是一次性库。
 
 **这不是删列授权**。它只是把门禁第 3 条里"另存兜底"这一步做成可执行的工具；
-R6 仍受 `docs/20 §6` 四条门禁约束，其中第 4 条（负责人书面确认）未满足。
+R6 已于 2026-10-25 执行（`docs/20 §6` 四条门禁当日全部满足）。此后 `--out` 在
+snapshot 列已退役的库上会明确拒绝；`--verify` / `--replay` 保留，用于核验与重放
+退役前的既有兜底导出——"卷副本坏了时读回来"的承诺在删列之后仍要兑现。
 """
 
 from __future__ import annotations
@@ -102,7 +104,13 @@ def export(out: Path, *, tenant_id: str | None = None, include_parents: bool = F
     引用 `tenants`，空库里没有父行。所以"能不能独立恢复"这个问题的答案是**取决于是否连父行一起导**。
     两种模式都留着：默认最小（只保这一列，正对应门禁第 3 条要保的东西），
     `--include-parents` 得到一份能在外键开启的库上完整重建的自足导出。
+
+    R6 删列之后本库已无可导出：显式拒绝，而不是静默产出一份空导出。
     """
+    if "snapshot" not in PersistentJob.__table__.columns:
+        print("R6 已执行：processing_jobs.snapshot 列已退役，本库无可导出。")
+        print("--verify / --replay 仍可用于退役前的既有导出（docs/20 §6 门禁 3）。")
+        return 1
     out.mkdir(parents=True, exist_ok=True)
     rows_path = out / ROWS_NAME
     parents_path = out / PARENTS_NAME
@@ -482,6 +490,9 @@ def replay(
     stubbed = 0
     loaded = 0
     mismatches: list[str] = []
+    # R6 之后目标库可能没有 snapshot 列：既有导出仍要能装进新结构，
+    # 否则"卷副本坏了时读回来"的兜底承诺会在删列当天失效。
+    has_snapshot_col = "snapshot" in PersistentJob.__table__.columns
     try:
         with Session() as db:
             if parents:
@@ -496,21 +507,21 @@ def replay(
             elif not disabled:
                 stubbed = _stub_parents(db, records)
             for row in records:
-                db.execute(
-                    insert(PersistentJob).values(
-                        id=row["id"],
-                        tenant_id=row["tenant_id"],
-                        owner_id=None,
-                        status=row["status"],
-                        created_at=datetime.now(timezone.utc),
-                        finished_at=None,
-                        attempt_count=0,
-                        snapshot=row["snapshot"],
-                        # R1 规范化列：不还原它们，`_rebuild` 会因为缺 fields/progress 报不完整。
-                        field_definitions=row.get("field_definitions"),
-                        progress=row.get("progress"),
-                    )
-                )
+                values = {
+                    "id": row["id"],
+                    "tenant_id": row["tenant_id"],
+                    "owner_id": None,
+                    "status": row["status"],
+                    "created_at": datetime.now(timezone.utc),
+                    "finished_at": None,
+                    "attempt_count": 0,
+                    # R1 规范化列：不还原它们，`_rebuild` 会因为缺 fields/progress 报不完整。
+                    "field_definitions": row.get("field_definitions"),
+                    "progress": row.get("progress"),
+                }
+                if has_snapshot_col:
+                    values["snapshot"] = row["snapshot"]
+                db.execute(insert(PersistentJob).values(**values))
                 loaded += 1
             db.flush()
             if parents:
@@ -522,8 +533,13 @@ def replay(
                 stored = db.get(PersistentJob, row["id"])
                 if stored is None:
                     mismatches.append(f"{row['id']}: 加载后读不到")
-                elif stored.snapshot != row["snapshot"]:
+                elif has_snapshot_col and stored.snapshot != row["snapshot"]:
                     mismatches.append(f"{row['id']}: 读回的快照与导出不一致")
+                elif not has_snapshot_col and (
+                    stored.field_definitions != row.get("field_definitions")
+                    or stored.progress != row.get("progress")
+                ):
+                    mismatches.append(f"{row['id']}: 读回的规范化列与导出不一致")
     finally:
         engine.dispose()
 

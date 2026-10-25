@@ -99,7 +99,7 @@ def test_job_snapshot_is_scoped_to_its_tenant(
         assert record is not None
         assert record.tenant_id == owner_workspace["tenant_id"]
         assert record.owner_id == owner_workspace["user_id"]
-        assert record.snapshot["status"] == "succeeded"
+        assert record.status == "succeeded"
 
     repository = JobRepository()
     assert repository.get(job_id, owner_workspace["tenant_id"]) is not None

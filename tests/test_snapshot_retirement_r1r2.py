@@ -1,8 +1,8 @@
-"""快照退役 R1+R2（`docs/20 §3`）：规范化列存在，且与快照同事务镜像。
+"""快照退役留下的规范化写入侧保证（R1/R2 列语义在 R6 删列后仍然成立）。
 
-R1 的判据是"没回填"——新列必须可空，历史行不能被迁移编出值来。R2 的判据是"镜像一致"——
-同一份 `Job` 派生出的快照与新列必须逐键相等，不一致就是当场可发现的 bug，而不是等 R4 对账
-才发现的漂移。本文件不删快照、也不切读路径（R5/R6 另有门禁）。
+R1 的列判据（可空、不猜历史值）与 R2 的写入判据（逐文件事实、告警归属尝试、进度与
+状态同事务）都活在规范化列上，不依赖已删除的 `snapshot` 列；本文件只保留这些在
+R6 之后仍然成立的部分。双写镜像与"历史行列必须为 NULL"两条随列一起退役。
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from sqlalchemy import select
 from app.contexts.processing.domain import JobAttempt
 from app.contexts.templates.domain import TemplateVersion
 from app.platform.db import SessionLocal
-from app.models.document import Document, DocumentVersion
+from app.models.document import DocumentVersion
 from app.models.job import FileInfo, Job, JobStatus, Progress
 from app.models.persistent_job import PersistentJob
 from app.models.schema import FieldDefinition, INVOICE_TEMPLATE
@@ -38,45 +38,6 @@ def _upload(workspace: dict, pdf) -> str:
     )
     assert response.status_code == 201, response.text
     return response.json()["job_id"]
-
-
-def test_r1_columns_start_empty_for_rows_created_before_the_migration(owner_workspace):
-    """历史行的新列必须是 NULL：可空 = 还没回填，不允许用默认值猜历史数据的意思。"""
-    now = datetime.now(timezone.utc)
-    legacy_id = uuid.uuid4().hex
-    with SessionLocal() as db:
-        db.add(
-            PersistentJob(
-                id=legacy_id,
-                tenant_id=owner_workspace["tenant_id"],
-                owner_id=owner_workspace["user_id"],
-                status="succeeded",
-                created_at=now,
-                attempt_count=1,
-                snapshot={"fields": [], "files": [], "status": "succeeded", "progress": "done"},
-            )
-        )
-        db.commit()
-        row = db.get(PersistentJob, legacy_id)
-        assert row.field_definitions is None and row.progress is None
-
-
-def test_r2_dual_write_mirrors_the_snapshot_key_for_key(owner_workspace, make_invoice_pdf):
-    job_id = _upload(owner_workspace, make_invoice_pdf("01100200011100045239"))
-    with SessionLocal() as db:
-        row = db.get(PersistentJob, job_id)
-        snapshot = row.snapshot
-        assert row.progress == snapshot["progress"], "进度与快照必须同事务派生"
-        assert row.field_definitions == snapshot["fields"]
-
-        version = db.scalar(select(DocumentVersion).where(DocumentVersion.job_id == job_id))
-        assert version is not None
-        snap_file = snapshot["files"][0]
-        assert version.page_count == snap_file["page_count"]
-        assert version.text_chars == snap_file["chars"]
-        assert version.ocr_applied == snap_file["ocr_applied"]
-        # 没有错误时列留在 NULL，而不是空串：空串会被读成"有一条空错误"。
-        assert version.parse_error == (snap_file["error"] or None)
 
 
 def test_r2_warnings_land_on_the_attempt_that_produced_them(owner_workspace):
@@ -129,8 +90,7 @@ def test_r2_template_version_job_keeps_a_copy_that_agrees_with_the_frozen_fields
 ):
     """docs/20 §2 的字段规则：`template_version_id` 非空就只信模板版本。
 
-    双写因此必须与冻结字段逐键相等——否则 R5 切读后，"以模板版本为准"这条规则会掩盖
-    列里已经漂移的值，而 R4 对账是唯一能发现它的地方，不该等到那一步。
+    列值必须与冻结字段逐键相等——否则"以模板版本为准"这条规则会掩盖列里已经漂移的值。
     """
     created = owner_workspace["client"].post(
         f"/api/v1/tenants/{owner_workspace['tenant_id']}/templates",
@@ -160,7 +120,7 @@ def test_r2_template_version_job_keeps_a_copy_that_agrees_with_the_frozen_fields
         row = db.get(PersistentJob, response.json()["job_id"])
         frozen = db.get(TemplateVersion, version_id).fields
         assert row.template_version_id == version_id
-        assert row.field_definitions == row.snapshot["fields"] == frozen
+        assert row.field_definitions == frozen
 
 
 def test_r2_parse_columns_separate_the_failed_file_in_a_partial_batch(
@@ -188,20 +148,12 @@ def test_r2_parse_columns_separate_the_failed_file_in_a_partial_batch(
 
     with SessionLocal() as db:
         row = db.get(PersistentJob, job_id)
-        assert row.status == "partial" and row.progress == row.snapshot["progress"]
-        snap_files = {item["name"]: item for item in row.snapshot["files"]}
+        assert row.status == "partial" and row.progress == "done"
         by_name = {
             version.original_filename: version
             for version in db.scalars(select(DocumentVersion).where(DocumentVersion.job_id == job_id))
         }
-        assert set(by_name) == set(snap_files)
-
-        for name, version in by_name.items():
-            snapshot_entry = snap_files[name]
-            assert version.page_count == snapshot_entry["page_count"]
-            assert version.text_chars == snapshot_entry["chars"]
-            assert version.ocr_applied == snapshot_entry["ocr_applied"]
-            assert version.parse_error == (snapshot_entry["error"] or None)
+        assert set(by_name) == {good.name, broken.name}
 
         assert by_name[good.name].parse_error is None
         assert by_name[broken.name].parse_error, "失败文件的错误原因必须落在版本行上"
@@ -259,11 +211,11 @@ def test_r2_warnings_attribute_to_the_attempt_that_ran(owner_workspace):
 
 
 def test_r5_makes_the_progress_column_the_read_source(owner_workspace, make_invoice_pdf):
-    """R5 之后 `progress` 列就是读路径的源，快照退成被动副本。
+    """R5 切读、R6 删列之后，`progress` 列是读路径的唯一源。
 
     这条替代了 R2 时期那条"手工改列会被下一次保存覆盖回来"的断言：那时列是镜像、快照是
-    源；换源之后改列就等于改可见进度，而快照不再被读路径改写。方向反了，判据也就要重写，
-    否则测试会去保护一个已经不存在的设计。
+    源；换源之后改列就等于改可见进度。方向反了，判据也就要重写，否则测试会去保护一个
+    已经不存在的设计。
     """
     job_id = _upload(owner_workspace, make_invoice_pdf("01100200011100045239"))
     with SessionLocal() as db:
@@ -274,6 +226,4 @@ def test_r5_makes_the_progress_column_the_read_source(owner_workspace, make_invo
 
     with SessionLocal() as db:
         job = JobRepository().get(job_id, owner_workspace["tenant_id"])
-        snapshot_progress = db.get(PersistentJob, job_id).snapshot["progress"]
-    assert job.progress.value == "parsing", "读路径仍在看快照"
-    assert snapshot_progress == "done", "快照不该被读路径改写"
+    assert job.progress.value == "parsing", "读路径只认 progress 列"
