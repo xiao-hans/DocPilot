@@ -1,9 +1,9 @@
-"""Extraction 层测试：MockExtractor / build_extraction_prompt / LLMExtractor / get_extractor。
+"""Extraction 层测试：MockExtractor / LabelExtractor / build_extraction_prompt / LLMExtractor / get_extractor。
 
 约定：
 - 全部为确定性、无网络依赖的测试；
 - LLMExtractor 一律注入假 httpx.Client（FakeClient），禁止任何真实网络请求；
-- 不修改 app/services/extraction/ 下的实现代码，仅在此文件新增测试。
+- 不修改 app/adapters/extraction/ 下的实现代码，仅在此文件新增测试。
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import pytest
 from app.models.schema import INVOICE_TEMPLATE, FieldDefinition, validate_fields
 from app.adapters.extraction import (
     ExtractionError,
+    LabelExtractor,
     LLMExtractor,
     MockExtractor,
     apply_type_coercion,
@@ -446,8 +447,85 @@ def test_llm_non_200_status_raises(monkeypatch):
 def test_get_extractor_factory():
     assert isinstance(get_extractor("mock"), MockExtractor)
     assert isinstance(get_extractor("llm"), LLMExtractor)
+    assert isinstance(get_extractor("label"), LabelExtractor)
     with pytest.raises(ValueError):
         get_extractor("bogus")
+
+
+# ===========================================================================
+# 14a. LabelExtractor —— 标签定位提取（维护轮 M34 的接缝试点）
+# ===========================================================================
+
+# 标签与字段名完全一致的发票文本（test_pipeline._make_invoice_text 同款）。
+LABEL_TEXT = (
+    "增值税电子普通发票\n"
+    "发票号码：01100200011100045239\n"
+    "开票日期：2025-03-15\n"
+    "销售方名称：恒信达科技有限公司\n"
+    "购买方名称：北京创想信息技术有限公司\n"
+    "价税合计：¥12,800.50\n"
+    "税额：¥735.50\n"
+)
+
+
+def test_label_full_invoice_extraction():
+    fields = _invoice_fields()
+    result = LabelExtractor().extract(LABEL_TEXT, fields)
+
+    assert result.values["发票号码"] == "01100200011100045239"
+    assert result.values["开票日期"] == "2025-03-15"
+    assert result.values["销售方名称"] == "恒信达科技有限公司"
+    assert result.values["购买方名称"] == "北京创想信息技术有限公司"
+    assert result.values["价税合计"] == 12800.5  # 货币记号剥离 + 千分位 + number 强转
+    assert result.values["税额"] == 735.5
+    assert result.warnings == []
+
+
+def test_label_miss_leaves_empty_and_never_invents():
+    """未命中就空着并告警——这是与 mock（编造兜底值）的本质区别。"""
+    fields = _invoice_fields()
+    text = "发票号码：01100200011100045239\n"
+    result = LabelExtractor().extract(text, fields)
+
+    assert result.values["发票号码"] == "01100200011100045239"
+    assert result.values["开票日期"] == ""
+    assert result.values["价税合计"] == ""
+    missing = [w for w in result.warnings if "未在文本中找到标签" in w]
+    assert len(missing) == 5
+    assert any("开票日期" in w for w in missing)
+
+
+def test_label_qualified_labels_are_not_matches():
+    """带限定词的行（价税合计(小写):）不算「价税合计」的命中：必须是紧邻结构。"""
+    fields = _invoice_fields()
+    result = LabelExtractor().extract("价税合计(小写): ¥1280.50元\n", fields)
+
+    assert result.values["价税合计"] == ""
+    assert any("价税合计" in w for w in result.warnings)
+
+
+def test_label_empty_text():
+    fields = _invoice_fields()
+    result = LabelExtractor().extract("  \n ", fields)
+
+    assert all(v == "" for v in result.values.values())
+    assert result.warnings == ["输入文本为空，所有字段值置空"]
+
+
+def test_label_deterministic_for_same_input():
+    r1 = LabelExtractor().extract(LABEL_TEXT, _invoice_fields())
+    r2 = LabelExtractor().extract(LABEL_TEXT, _invoice_fields())
+    assert r1.values == r2.values
+    assert r1.warnings == r2.warnings
+
+
+def test_label_values_come_only_from_the_text():
+    """输出是文档内容的纯函数：无标签文本 → 全空，不出现任何编造值。"""
+    fields = _invoice_fields()
+    result = LabelExtractor().extract("与发票无关的会议纪要正文一段", fields)
+
+    assert all(v == "" for v in result.values.values())
+    assert len(result.warnings) == len(fields)
 
 
 # ===========================================================================

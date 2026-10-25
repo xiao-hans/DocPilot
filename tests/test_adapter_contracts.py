@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 from typing import Any
 
@@ -43,9 +44,9 @@ from app.contexts.processing import api as workspace_jobs
 from app.contexts.review.domain import DocumentText, ExtractionResult
 from app.platform.db import SessionLocal
 from app.models.document import DocumentVersion
-from app.models.schema import FieldDefinition
+from app.models.schema import FieldDefinition, INVOICE_TEMPLATE
 from app.contexts.processing import pipeline as pipeline_module
-from app.adapters.extraction import get_extractor
+from app.adapters.extraction import LabelExtractor, get_extractor
 from app.adapters.extraction.base import ExtractResult, ExtractorBase
 from app.adapters.extraction.mock import MockExtractor
 from app.contexts.processing.manager import get_job_manager
@@ -281,6 +282,7 @@ def test_unreplaced_factories_still_build_the_defaults():
     """
     assert isinstance(get_dispatcher(), ParserDispatcher)
     assert get_extractor("mock").__class__.__name__ == "MockExtractor"
+    assert isinstance(get_extractor("label"), LabelExtractor)
     assert isinstance(build_object_storage(), ObjectStorage)
     assert get_object_storage() is not None
     # 工厂的拒绝分支同样要保持：未知模式与未知后端都必须显式失败，不静默退化。
@@ -358,3 +360,52 @@ def test_object_storage_contract_is_satisfied_by_both_implementations(tmp_path: 
     assert storage.delete("t/j/a.pdf") is True
     assert storage.stat("t/j/a.pdf").exists is False
     assert storage.delete("t/j/a.pdf") is False
+
+
+def test_label_extractor_runs_the_real_chain_on_a_real_document(
+    owner_workspace, sandbox, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """提取接缝的闭环判据（维护轮 M34）：真解析 + 真提取跑完整条上传链路。
+
+    `EXTRACTOR_MODE` 换成 `label` 后，从 PyMuPDF 文本层到落库结果之间没有任何假实现。
+    PDF 用内置中文字体 `china-s` 生成：默认字体插中文时文本层里 CJK 全是 `·` 占位符
+    （探针实测，`docs/09 §73`），中文标签根本不存在——那是夹具的失真，不是引擎的。
+    六个字段的标签与模板字段名一致，断言全部取到 PDF 里真实印刷的值。
+    """
+    import pymupdf
+
+    monkeypatch.setattr(pipeline_module, "EXTRACTOR_MODE", "label")
+    monkeypatch.setattr(get_job_manager()._pipeline, "_injected_extractor", None)
+
+    pdf = tmp_path / "invoice-cjk.pdf"
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text(
+        (72, 72),
+        "增值税电子普通发票\n"
+        "发票号码: 01100200011100045239\n"
+        "开票日期: 2025-01-12\n"
+        "销售方名称: 恒信达科技有限公司\n"
+        "购买方名称: 北京创想信息技术有限公司\n"
+        "价税合计: ¥12,800.50元\n"
+        "税额: ¥76.83元\n",
+        fontname="china-s",
+    )
+    doc.save(pdf)
+    doc.close()
+
+    response = owner_workspace["client"].post(
+        f"/api/v1/tenants/{owner_workspace['tenant_id']}/jobs",
+        headers={"X-CSRF-Token": owner_workspace["csrf"]},
+        files=[("files", (pdf.name, pdf.read_bytes(), "application/pdf"))],
+        data={"fields": json.dumps(INVOICE_TEMPLATE)},
+    )
+    assert response.status_code == 201, response.text
+
+    values = _result_values(owner_workspace, response.json()["job_id"])
+    assert values["发票号码"] == "01100200011100045239"
+    assert values["开票日期"] == "2025-01-12"
+    assert values["销售方名称"] == "恒信达科技有限公司"
+    assert values["购买方名称"] == "北京创想信息技术有限公司"
+    assert values["价税合计"] == 12800.5
+    assert values["税额"] == 76.83

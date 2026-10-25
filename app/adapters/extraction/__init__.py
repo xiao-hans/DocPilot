@@ -11,6 +11,7 @@ from .base import (
     apply_type_coercion,
     coerce_value,
 )
+from .label import LabelExtractor
 from .llm import LLMExtractor
 from .mock import MockExtractor
 from .prompt import build_extraction_prompt
@@ -19,13 +20,16 @@ from .prompt import build_extraction_prompt
 def get_extractor(mode: str) -> ExtractorBase:
     """提取器工厂。
 
-    mode: "mock" → MockExtractor；"llm" → LLMExtractor；其他抛 ValueError。
+    mode: "mock" → MockExtractor；"llm" → LLMExtractor；"label" → LabelExtractor；
+    其他抛 ValueError。
     """
     if mode == "mock":
         return MockExtractor()
     if mode == "llm":
         return LLMExtractor()
-    raise ValueError(f"不支持的提取模式: {mode}（可选：mock / llm）")
+    if mode == "label":
+        return LabelExtractor()
+    raise ValueError(f"不支持的提取模式: {mode}（可选：mock / llm / label）")
 
 
 __all__ = [
@@ -36,6 +40,7 @@ __all__ = [
     "apply_type_coercion",
     "MockExtractor",
     "LLMExtractor",
+    "LabelExtractor",
     "build_extraction_prompt",
     "get_extractor",
     "FieldDefinition",
