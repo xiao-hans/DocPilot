@@ -164,16 +164,19 @@ wsl -d Ubuntu-24.04 -- tail -f /dev/null
 
 ```bash
 # 基础套件（SQLite）
-.venv/Scripts/python.exe -m pytest -m "not broker and not s3"
+.venv/Scripts/python.exe -m pytest -m "not broker and not s3 and not clamd"
 
 # 基础套件（PostgreSQL，先设 TEST_DATABASE_URL）
-.venv/Scripts/python.exe -m pytest -m "not broker and not s3"
+.venv/Scripts/python.exe -m pytest -m "not broker and not s3 and not clamd"
 
 # 真实 SeaweedFS 端点
 .venv/Scripts/python.exe -m pytest -m s3
 
 # 真实 RabbitMQ
 .venv/Scripts/python.exe -m pytest -m broker
+
+# 真实 clamd（默认 127.0.0.1:3310；连不上整组跳过）
+.venv/Scripts/python.exe -m pytest -m clamd
 
 # PostgreSQL 迁移门禁：空库 upgrade → downgrade -1 → upgrade → alembic check
 .venv/Scripts/python.exe scripts/migration_gate.py
